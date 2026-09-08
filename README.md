@@ -1,5 +1,9 @@
 # ssh-hold
 
+[![CI](https://github.com/CherryLover/ssh-hold/actions/workflows/ci.yml/badge.svg)](https://github.com/CherryLover/ssh-hold/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/CherryLover/ssh-hold)](https://github.com/CherryLover/ssh-hold/releases/latest)
+[![License](https://img.shields.io/github/license/CherryLover/ssh-hold)](LICENSE)
+
 把一条 SSH 连接撑住，之后所有命令都复用它，不用再输一次密码。
 
 跳板机发的一次性密码只能用一次，登进去开第二个终端就没辙了。`ssh-hold` 在第一次登录时把连接留在后台，后面执行命令、传文件、开交互终端全都走这条已经开着的通道，不再重新认证。同样的机制也适合把一条连接交给自动化脚本或者 AI Agent 用，不用反复把凭据递出去。
@@ -46,8 +50,8 @@ curl -fsSL https://raw.githubusercontent.com/CherryLover/ssh-hold/main/install.s
 或者从 [Releases](https://github.com/CherryLover/ssh-hold/releases) 下发布包自己装：
 
 ```bash
-tar -xzf ssh-hold-1.0.0.tar.gz
-cd ssh-hold-1.0.0
+tar -xzf ssh-hold-<版本>.tar.gz
+cd ssh-hold-<版本>
 ./install.sh
 ```
 
