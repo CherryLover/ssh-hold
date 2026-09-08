@@ -14,6 +14,8 @@ REPO="CherryLover/ssh-hold"
 PREFIX="${PREFIX:-$HOME/.local}"
 VERSION=""
 ACTION="install"
+# 直接指定发布包地址，跳过版本查询。CI 用它拿本地包演一遍联网安装那条路径。
+RELEASE_URL="${SSH_HOLD_RELEASE_URL:-}"
 
 die() {
   echo "install.sh: $*" >&2
@@ -50,7 +52,7 @@ done
 
 # 通过管道跑时 BASH_SOURCE 指不到真实文件，这时只能走联网安装。
 SRC=""
-if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+if [[ -z "$RELEASE_URL" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   candidate="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   [[ -f "$candidate/bin/ssh-hold" ]] && SRC="$candidate"
 fi
@@ -74,6 +76,15 @@ uninstall() {
   echo "通道记录（~/.ssh/hold）没有动。要清掉请自己 ssh-hold stop。"
 }
 
+# 下载用的临时目录。放在全局，否则 EXIT trap 触发时变量已经出了函数作用域，
+# set -u 下会直接报 unbound variable，让本来成功的安装以非 0 退出。
+WORKDIR=""
+cleanup() {
+  [[ -n "$WORKDIR" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
+  return 0
+}
+trap cleanup EXIT
+
 fetch() {
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$1"
@@ -85,23 +96,25 @@ fetch() {
 }
 
 download_release() {
-  local tmp tag url
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  tag="$VERSION"
-  if [[ -z "$tag" ]]; then
-    echo "正在查询最新版本 ..." >&2
-    tag="$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
-      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-    [[ -n "$tag" ]] || die "查不到最新版本，请用 --version 指定，或检查网络"
+  local tag url
+  WORKDIR="$(mktemp -d)"
+  url="$RELEASE_URL"
+  if [[ -z "$url" ]]; then
+    tag="$VERSION"
+    if [[ -z "$tag" ]]; then
+      echo "正在查询最新版本 ..." >&2
+      tag="$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      [[ -n "$tag" ]] || die "查不到最新版本，请用 --version 指定，或检查网络"
+    fi
+    url="https://github.com/$REPO/releases/download/$tag/ssh-hold-${tag#v}.tar.gz"
   fi
-  url="https://github.com/$REPO/releases/download/$tag/ssh-hold-${tag#v}.tar.gz"
-  echo "正在下载 $tag ..." >&2
-  fetch "$url" >"$tmp/pkg.tar.gz" || die "下载失败: $url"
-  tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败，下载的文件可能不完整"
-  # 包里是 ssh-hold-<版本>/bin/ssh-hold，从 $tmp 数下来是第 3 层。
+  echo "正在下载 $url ..." >&2
+  fetch "$url" >"$WORKDIR/pkg.tar.gz" || die "下载失败: $url"
+  tar -xzf "$WORKDIR/pkg.tar.gz" -C "$WORKDIR" || die "解压失败，下载的文件可能不完整"
+  # 包里是 ssh-hold-<版本>/bin/ssh-hold，从 WORKDIR 数下来是第 3 层。
   local found
-  found="$(find "$tmp" -maxdepth 3 -type f -path '*/bin/ssh-hold' | head -1)"
+  found="$(find "$WORKDIR" -maxdepth 3 -type f -path '*/bin/ssh-hold' | head -1)"
   [[ -n "$found" ]] || die "发布包里找不到 bin/ssh-hold"
   SRC="${found%/bin/ssh-hold}"
 }

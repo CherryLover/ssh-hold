@@ -49,6 +49,14 @@ jobs:
           test -f "$RUNNER_TEMP/opt/lib/ssh-hold/paste.py"
           test -f "$RUNNER_TEMP/opt/share/man/man1/ssh-hold.1"
 
+      - name: 联网安装那条路径（拿本地包演一遍）
+        run: |
+          set -euo pipefail
+          version="$(make version)"
+          SSH_HOLD_RELEASE_URL="file://$PWD/dist/ssh-hold-${version}.tar.gz" \
+            ./install.sh --prefix "$RUNNER_TEMP/opt-remote"
+          "$RUNNER_TEMP/opt-remote/bin/ssh-hold" version | grep -q "ssh-hold ${version}"
+
       - name: 单文件版自检
         run: |
           set -euo pipefail
