@@ -55,7 +55,11 @@ jobs:
           version="$(make version)"
           SSH_HOLD_RELEASE_URL="file://$PWD/dist/ssh-hold-${version}.tar.gz" \
             ./install.sh --prefix "$RUNNER_TEMP/opt-remote"
-          "$RUNNER_TEMP/opt-remote/bin/ssh-hold" version | grep -q "ssh-hold ${version}"
+          # 先跑完再比对。直接管给 grep -q 的话它一匹配上就关管道，
+          # ssh-hold 后面的 echo 撞上 EPIPE，pipefail 下会把整步判成失败。
+          out="$("$RUNNER_TEMP/opt-remote/bin/ssh-hold" version)"
+          echo "$out"
+          grep -q "ssh-hold ${version}" <<<"$out"
 
       - name: 单文件版自检
         run: |
