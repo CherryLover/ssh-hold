@@ -19,7 +19,8 @@ _ssh_hold() {
     'status:看通道还在不在'
     'list:列出所有通道'
     'stop:关掉通道'
-    'version:显示版本和运行库位置'
+    'skill:把用法教给 Claude Code / Codex'
+    'version:显示版本和安装位置'
   )
 
   _arguments -C '1: :->command' '*:: :->args'
@@ -47,6 +48,13 @@ _ssh_hold() {
             '--verify-password[本地核对密码是否一致]' \
             '--keep-password-spaces[保留密码首尾空白]' \
             '--insecure[不校验主机指纹]'
+          ;;
+        skill)
+          _arguments \
+            '--claude[装给 Claude Code]' \
+            '--codex[装给 Codex]' \
+            '--dir[装到指定的 skills 根目录]:目录:_files -/' \
+            '1:子命令:(install path show)'
           ;;
         run|exec|shell|sh|status|stop|close|exit) _ssh_hold_names ;;
       esac

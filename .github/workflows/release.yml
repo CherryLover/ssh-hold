@@ -66,6 +66,10 @@ jobs:
           echo "$out"
           grep -q "ssh-hold ${version}" <<<"$out"
           test -f "$HOME/.cache/ssh-hold/lib-${version}/paste.py"
+          # 内嵌的 SKILL.md 必须和源码一字不差，否则发出去的 skill 是错的
+          mkdir -p "$HOME/.claude"
+          "$RUNNER_TEMP/standalone" skill install
+          diff "$HOME/.claude/skills/ssh-hold/SKILL.md" "$GITHUB_WORKSPACE/skill/SKILL.md"
 
       - name: 生成 Release 说明
         run: |

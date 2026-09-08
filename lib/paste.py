@@ -69,7 +69,7 @@ def compare_passwords(parsed, entered):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="读取剪贴板中的跳板机连接信息")
+    parser = argparse.ArgumentParser(description="读取剪贴板中的 JumpServer 连接信息")
     parser.add_argument("script", help=argparse.SUPPRESS)
     parser.add_argument("-n", "--name")
     checks = parser.add_mutually_exclusive_group()

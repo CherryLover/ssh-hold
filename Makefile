@@ -20,7 +20,7 @@ version:
 	@echo $(VERSION)
 
 test:
-	cd tests && python3 -m unittest -v test_paste
+	cd tests && python3 -m unittest -v test_paste test_skill
 
 test-wire:
 	cd tests && uv run --with paramiko python -m unittest -v test_wire
@@ -40,11 +40,12 @@ standalone:
 	python3 scripts/build-standalone.py "$(VERSION)" "$(DIST)/ssh-hold"
 
 dist: clean standalone
-	@mkdir -p $(PKG)/bin $(PKG)/lib $(PKG)/man $(PKG)/completions
+	@mkdir -p $(PKG)/bin $(PKG)/lib $(PKG)/man $(PKG)/completions $(PKG)/skill
 	sed 's/^VERSION="[^"]*"$$/VERSION="$(VERSION)"/' bin/ssh-hold > $(PKG)/bin/ssh-hold
 	chmod 755 $(PKG)/bin/ssh-hold
 	cp lib/askpass $(PKG)/lib/askpass && chmod 755 $(PKG)/lib/askpass
 	cp lib/paste.py $(PKG)/lib/paste.py
+	cp skill/SKILL.md $(PKG)/skill/
 	cp man/ssh-hold.1 $(PKG)/man/
 	cp completions/ssh-hold.bash completions/_ssh-hold $(PKG)/completions/
 	cp install.sh $(PKG)/install.sh && chmod 755 $(PKG)/install.sh

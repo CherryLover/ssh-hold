@@ -22,6 +22,9 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B ssh\-hold stop
 [名字]
 .br
+.B ssh\-hold skill
+[install|path|show] [\fB\-\-claude\fR] [\fB\-\-codex\fR] [\fB\-\-dir\fR 目录]
+.br
 .B ssh\-hold version
 .SH 描述
 .B ssh\-hold
@@ -29,8 +32,11 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B start
 时用一次，之后所有命令都走这条已经打开的通道，不再重新认证。
 .PP
-它解决两类问题：跳板机发的一次性密码，用过一次就作废，普通做法没法再开第二个终端；
-以及把一条连接共享给自动化工具或 AI Agent 使用，不必反复把凭据交出去。
+它解决的主要问题是把一条已经认证好的连接共享出去：交给自动化脚本或 AI Agent 使用，
+不必反复把凭据交出去；或者自己同时管着多台机器时，省掉每次重新握手和认证。
+.PP
+在重连代价高、甚至根本不可能的场合它是刚需——例如堡垒机发的一次性密码，
+用过一次就作废，普通做法连第二个终端都开不了。但它并不是只为这类场景做的。
 .PP
 密码全程不落盘。通道信息记在
 .IR ~/.ssh/hold/<名字>/ ，
@@ -44,8 +50,11 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 用密码或证书撑开一条新通道。
 .TP
 .B paste
-读取 macOS 剪贴板里的跳板机连接信息（名称、主机、端口、用户名、密码、协议、过期时间），
-解析后直接撑开通道，不必手工敲一遍。
+读取 macOS 剪贴板里 JumpServer 格式的连接信息（名称、主机、端口、用户名、密码、协议、
+过期时间），解析后直接撑开通道，不必手工敲一遍。这是针对该复制格式的便利功能，
+普通服务器直接用
+.B start
+即可。
 .TP
 .B run
 在已撑开的通道上执行远端命令。远端命令必须写在
@@ -61,8 +70,44 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B stop
 断开通道并删掉对应的记录目录。
 .TP
+.B skill
+把随程序一起发布的
+.I SKILL.md
+写进 AI 编程工具的 skills 目录，让它们知道该怎么用这个工具。
+Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
+.RS
+.TP
+.B install
+写入文件。不加目标选项时按本机装了哪个自动挑：
+.I ~/.claude
+和
+.I ~/.codex
+哪个存在就往哪个装，两个都在就都装。已有内容不一样时先备份成
+.I SKILL.md.bak.<时间戳>
+再覆盖，内容一样则什么都不做。
+.TP
+.B path
+只打印会写到哪些位置，不动文件。
+.TP
+.B show
+把
+.I SKILL.md
+的内容打到标准输出。
+.RE
+.RS
+.PP
+选项：
+.B \-\-claude
+只装给 Claude Code；
+.B \-\-codex
+只装给 Codex；
+.BI \-\-dir " 目录"
+装到指定的 skills 根目录，会在它下面建
+.IR ssh\-hold/ 。
+.RE
+.TP
 .B version
-显示版本号、程序路径、运行库路径和通道目录。
+显示版本号、程序路径、运行库路径、技能文件路径和通道目录。
 .SH START 选项
 .TP
 .BR \-n ", " \-\-name " 名字"
@@ -75,7 +120,7 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 从标准输入读密码。密码不会出现在命令行参数里，适合脚本和 Agent 调用。
 .TP
 .B \-\-insecure
-不校验主机指纹。跳板机地址经常变时用，仅限临时场景。
+不校验主机指纹。地址经常变的临时机器才用。
 .TP
 .B \-\-key
 改用密钥登录而不是密码。
@@ -124,13 +169,24 @@ ControlMaster 复用套接字。
 .TP
 .I ~/.ssh/hold/<名字>/keepalive.log
 保活日志。通道异常时先看这里。
+.TP
+.I <前缀>/share/ssh-hold/SKILL.md
+随程序发布的技能说明，
+.B ssh\-hold skill install
+写出去的就是它。
+.TP
+.IR ~/.claude/skills/ssh-hold/SKILL.md " 和 " ~/.codex/skills/ssh-hold/SKILL.md
+.B skill install
+的默认落点。卸载
+.B ssh\-hold
+不会删掉它们。
 .SH 例子
 .PP
-用一次性密码撑开跳板机通道，密码走标准输入：
+用密码撑开，密码走标准输入（适合脚本和 Agent 调用）：
 .PP
 .nf
 .RS
-printf '%s\\n' '一次性密码' | ssh\-hold start \-n us\-1 \-p 2222 \-\-password\-stdin ubuntu@跳板机
+printf '%s\\n' '密码' | ssh\-hold start \-n web \-p 2222 \-\-password\-stdin ubuntu@1.2.3.4
 .RE
 .fi
 .PP
@@ -138,7 +194,7 @@ printf '%s\\n' '一次性密码' | ssh\-hold start \-n us\-1 \-p 2222 \-\-passwo
 .PP
 .nf
 .RS
-ssh\-hold start \-n us\-1 \-i ~/keys/prod.pem ubuntu@1.2.3.4
+ssh\-hold start \-n web \-i ~/keys/vps.pem ubuntu@1.2.3.4
 .RE
 .fi
 .PP
@@ -146,7 +202,15 @@ ssh\-hold start \-n us\-1 \-i ~/keys/prod.pem ubuntu@1.2.3.4
 .PP
 .nf
 .RS
-ssh\-hold run us\-1 \-\- 'ps aux | head \-20'
+ssh\-hold run web \-\- 'ps aux | head \-20'
+.RE
+.fi
+.PP
+把用法教给本机的 Claude Code 和 Codex：
+.PP
+.nf
+.RS
+ssh\-hold skill install
 .RE
 .fi
 .PP
@@ -154,7 +218,7 @@ ssh\-hold run us\-1 \-\- 'ps aux | head \-20'
 .PP
 .nf
 .RS
-scp \-o ControlPath="$HOME/.ssh/hold/us\-1/sock" \-o ControlMaster=no \\
+scp \-o ControlPath="$HOME/.ssh/hold/web/sock" \-o ControlMaster=no \\
     本地文件 ubuntu@1.2.3.4:/tmp/
 .RE
 .fi
@@ -172,7 +236,7 @@ scp \-o ControlPath="$HOME/.ssh/hold/us\-1/sock" \-o ControlMaster=no \\
 .BR top / vim / less ，
 这些都会一直等输入。
 .PP
-如果跳板机设了最长会话时间，到点还是会被踢，这个挡不住。
+如果服务器或堡垒机设了最长会话时间，到点还是会被踢，这个挡不住。
 .SH 参见
 .BR ssh (1),
 .BR ssh_config (5),

@@ -7,6 +7,8 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 BIN = Path(os.environ.get("SSH_HOLD_BIN", ROOT / "bin" / "ssh-hold"))
 LIB = Path(os.environ.get("SSH_HOLD_LIB", ROOT / "lib"))
+# What `ssh-hold skill install` is expected to write, whatever build is under test.
+SKILL = ROOT / "skill" / "SKILL.md"
 
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))

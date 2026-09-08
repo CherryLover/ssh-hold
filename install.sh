@@ -14,6 +14,7 @@ REPO="CherryLover/ssh-hold"
 PREFIX="${PREFIX:-$HOME/.local}"
 VERSION=""
 ACTION="install"
+WITH_SKILL=0
 # 直接指定发布包地址，跳过版本查询。CI 用它拿本地包演一遍联网安装那条路径。
 RELEASE_URL="${SSH_HOLD_RELEASE_URL:-}"
 
@@ -27,16 +28,20 @@ usage() {
 用法: ./install.sh [选项]
 
   --prefix 目录     安装前缀，默认 ~/.local
-  --version 版本    指定要装的版本（例如 v1.0.0），只在联网安装时有意义
+  --version 版本    指定要装的版本（例如 v1.1.0），只在联网安装时有意义
+  --with-skill      装完顺手把用法教给本机的 Claude Code / Codex
   --uninstall       卸载已安装的文件，不动 ~/.ssh/hold 里的通道
   -h, --help        显示这段说明
 
 装完的位置:
   <前缀>/bin/ssh-hold
   <前缀>/lib/ssh-hold/{askpass,paste.py}
+  <前缀>/share/ssh-hold/SKILL.md
   <前缀>/share/man/man1/ssh-hold.1
   <前缀>/share/bash-completion/completions/ssh-hold
   <前缀>/share/zsh/site-functions/_ssh-hold
+
+不加 --with-skill 就不会往 ~/.claude、~/.codex 里写任何东西。
 EOF
 }
 
@@ -44,6 +49,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) [[ $# -ge 2 ]] || die "--prefix 后面要跟目录"; PREFIX="$2"; shift 2 ;;
     --version) [[ $# -ge 2 ]] || die "--version 后面要跟版本号"; VERSION="$2"; shift 2 ;;
+    --with-skill) WITH_SKILL=1; shift ;;
     --uninstall) ACTION="uninstall"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知选项: $1" ;;
@@ -62,6 +68,7 @@ uninstall() {
   for path in \
     "$PREFIX/bin/ssh-hold" \
     "$PREFIX/lib/ssh-hold" \
+    "$PREFIX/share/ssh-hold" \
     "$PREFIX/share/man/man1/ssh-hold.1" \
     "$PREFIX/share/bash-completion/completions/ssh-hold" \
     "$PREFIX/share/zsh/site-functions/_ssh-hold"
@@ -74,6 +81,7 @@ uninstall() {
   done
   (( removed )) || echo "$PREFIX 下没有找到已安装的 ssh-hold。"
   echo "通道记录（~/.ssh/hold）没有动。要清掉请自己 ssh-hold stop。"
+  echo "写进 ~/.claude、~/.codex 的 skill 也没动，不要了就自己删掉 skills/ssh-hold/。"
 }
 
 # 下载用的临时目录。放在全局，否则 EXIT trap 触发时变量已经出了函数作用域，
@@ -144,6 +152,7 @@ fi
 install_file "$SRC/bin/ssh-hold" "$PREFIX/bin/ssh-hold" 755
 install_file "$SRC/lib/askpass" "$PREFIX/lib/ssh-hold/askpass" 755
 install_file "$SRC/lib/paste.py" "$PREFIX/lib/ssh-hold/paste.py" 644
+install_file "$SRC/skill/SKILL.md" "$PREFIX/share/ssh-hold/SKILL.md" 644
 install_file "$SRC/man/ssh-hold.1" "$PREFIX/share/man/man1/ssh-hold.1" 644
 install_file "$SRC/completions/ssh-hold.bash" "$PREFIX/share/bash-completion/completions/ssh-hold" 644
 install_file "$SRC/completions/_ssh-hold" "$PREFIX/share/zsh/site-functions/_ssh-hold" 644
@@ -151,6 +160,15 @@ install_file "$SRC/completions/_ssh-hold" "$PREFIX/share/zsh/site-functions/_ssh
 echo
 echo "装好了：$PREFIX/bin/ssh-hold"
 "$PREFIX/bin/ssh-hold" version
+
+if (( WITH_SKILL )); then
+  echo
+  "$PREFIX/bin/ssh-hold" skill install
+else
+  echo
+  echo "要把用法教给 Claude Code / Codex，跑一下："
+  echo "  $PREFIX/bin/ssh-hold skill install"
+fi
 
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;

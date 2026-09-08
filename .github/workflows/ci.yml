@@ -61,12 +61,24 @@ jobs:
           echo "$out"
           grep -q "ssh-hold ${version}" <<<"$out"
 
+      - name: 装好的这份能把 skill 写出去
+        run: |
+          set -euo pipefail
+          fake="$RUNNER_TEMP/skillhome"
+          mkdir -p "$fake/.claude" "$fake/.codex"
+          HOME="$fake" "$RUNNER_TEMP/opt/bin/ssh-hold" skill install
+          diff "$fake/.claude/skills/ssh-hold/SKILL.md" skill/SKILL.md
+          diff "$fake/.codex/skills/ssh-hold/SKILL.md" skill/SKILL.md
+
       - name: 单文件版自检
         run: |
           set -euo pipefail
           # 换个 HOME，确认它靠内嵌副本工作，而不是摸到别处装好的 lib。
           export HOME="$RUNNER_TEMP/fakehome"
-          mkdir -p "$HOME"
+          mkdir -p "$HOME/.codex"
           cp dist/ssh-hold "$RUNNER_TEMP/ssh-hold-standalone"
           "$RUNNER_TEMP/ssh-hold-standalone" version
           test -f "$HOME/.cache/ssh-hold"/lib-*/paste.py
+          # 单文件版里内嵌的 SKILL.md 也要和源码一字不差
+          "$RUNNER_TEMP/ssh-hold-standalone" skill install
+          diff "$HOME/.codex/skills/ssh-hold/SKILL.md" "$GITHUB_WORKSPACE/skill/SKILL.md"

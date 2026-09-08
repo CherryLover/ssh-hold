@@ -19,8 +19,12 @@ ROOT = Path(__file__).resolve().parent.parent
 EMBED = re.compile(r"^# >>> EMBED_START.*?^# <<< EMBED_END$", re.DOTALL | re.MULTILINE)
 VERSION_LINE = re.compile(r'^VERSION="[^"]*"$', re.MULTILINE)
 
-# Files copied into the cache directory, with the mode they need there.
-PAYLOAD = (("askpass", 0o700), ("paste.py", 0o600))
+# (source path in the repo, name in the cache directory, mode there)
+PAYLOAD = (
+    ("lib/askpass", "askpass", 0o700),
+    ("lib/paste.py", "paste.py", 0o600),
+    ("skill/SKILL.md", "SKILL.md", 0o600),
+)
 
 
 def heredoc(name, text, mode):
@@ -42,8 +46,8 @@ def build(version, output):
         raise SystemExit("bin/ssh-hold has no VERSION= line to stamp")
     script = VERSION_LINE.sub(f'VERSION="{version}"', script, count=1)
 
-    body = "".join(heredoc(name, (ROOT / "lib" / name).read_text(encoding="utf-8"), mode)
-                   for name, mode in PAYLOAD)
+    body = "".join(heredoc(name, (ROOT / source).read_text(encoding="utf-8"), mode)
+                   for source, name, mode in PAYLOAD)
     embedded = ("# >>> EMBED_START  由 scripts/build-standalone.py 生成，请勿手工编辑。\n"
                 "HAS_EMBEDDED=1\n"
                 "embedded_lib() {\n"

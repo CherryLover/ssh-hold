@@ -1,5 +1,44 @@
 # 更新记录
 
+## 1.1.0 — 2026-09-08
+
+把「教 AI 工具怎么用它」这件事做进了命令本身。
+
+### 新增 `ssh-hold skill`
+
+```bash
+ssh-hold skill install          # 按本机装了哪个自动挑
+ssh-hold skill install --codex  # 只装给 Codex
+ssh-hold skill path             # 只看会写到哪儿
+ssh-hold skill show             # 打印内容
+```
+
+- `SKILL.md` 现在跟着程序一起发布，装到 `<前缀>/share/ssh-hold/SKILL.md`，单文件版则内嵌
+- 不写目标选项时看本机装了什么：`~/.claude` 在就装给 Claude Code，`~/.codex` 在就装给 Codex，两个都在就都装。两边是同一种格式，一份文件通吃
+- `--dir` 可以装到任意 skills 根目录，比如某个项目自己的 `.claude/skills`
+- 重复跑安全：内容一样什么都不做；手改过的版本先备份成 `SKILL.md.bak.<时间戳>` 再覆盖
+- `install.sh --with-skill` 装完顺手写出去。不加这个参数，安装过程绝不碰 `~/.claude` 和 `~/.codex`
+- `ssh-hold version` 多打一行技能文件路径
+
+### 文档重新定位
+
+之前的 README、SKILL.md 和 man 手册都把「堡垒机一次性密码」当成主线来写——光 README 里「跳板机」就出现了 11 次，而 VPS、JumpServer 一次都没提。这跟工具实际的样子不符：它就是个复用 SSH 连接的工具，最常见的用法是连自己的 VPS，或者把一条已认证的连接交给 AI Agent；一次性密码只是「重连不了」的极端个例，`paste` 也只是认 JumpServer 那一种复制格式的小便利。
+
+- README 改成先讲复用连接本身，再按「交给 AI Agent / 管多台机器 / 重连代价高」三种场合展开
+- 例子从 `跳板机地址:2222` 换成普通 VPS，通道名从 `us-1` 换成 `web`
+- `paste` 明确写成 JumpServer 专用的可选便利，并注明用不上可以忽略
+- SKILL.md 开头改成告诉 AI「现成通道就是钥匙，别去要用户的密码」，并说明什么时候才该用 `paste`
+- 命令行文案跟着改：`--password-stdin` 的说明不再是「给我用时用这个」，交互提示从「请输入一次性密码」改成「请输入密码」
+- 断线报错原来写死「一次性密码无法重连」，对证书通道是错的，改成分别说明两种通道怎么恢复
+
+### SKILL.md 内容更新
+
+- **补上了 `paste`**：之前整个命令都没写进去，用户说"信息复制好了"时 AI 只能退回去手敲
+- **删掉过时的 sshpass**：早就改成走 `SSH_ASKPASS` 了，文档里还留着"缺依赖就 brew install sshpass"
+- 补上 `--verify-password` 会等输入、不能在工具调用里跑的警告
+- 报错对照表补上剪贴板解析失败、凭据过期、运行库找不到几种情况
+- 不再写死"脚本在 `~/.local/bin/ssh-hold`"，改成让 AI 用 `ssh-hold version` 自己看
+
 ## 1.0.1 — 2026-09-08
 
 修掉 1.0.0 联网安装路径上的两个问题。从发布包本地安装不受影响。

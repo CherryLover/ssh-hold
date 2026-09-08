@@ -21,13 +21,14 @@ _ssh_hold() {
   done
 
   if [[ -z "$cmd" ]]; then
-    COMPREPLY=($(compgen -W "start paste run shell status list stop version --help --version" -- "$cur"))
+    COMPREPLY=($(compgen -W "start paste run shell status list stop skill version --help --version" -- "$cur"))
     return
   fi
 
   case "$prev" in
     -n|--name|-p|--port|-o) return ;;
     -i|--identity) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+    --dir) COMPREPLY=($(compgen -d -- "$cur")); return ;;
   esac
 
   case "$cmd" in
@@ -38,6 +39,13 @@ _ssh_hold() {
     paste)
       [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W \
         "-n --name --check --debug --verify-password --keep-password-spaces --insecure" -- "$cur"))
+      ;;
+    skill)
+      if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "--claude --codex --dir --help" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "install path show" -- "$cur"))
+      fi
       ;;
     run|exec|shell|sh|status|stop|close|exit)
       COMPREPLY=($(compgen -W "$(_ssh_hold_names)" -- "$cur"))

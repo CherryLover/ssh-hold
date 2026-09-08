@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# ssh-hold — 用一次性密码把 SSH 通道撑住，后续命令复用同一条连接。
-# 密码只在 start 时用一次，不会落盘。通道断了就只能重新拿密码再 start。
+# ssh-hold — 把一条 SSH 连接撑住，后续命令复用它，不用再认证第二次。
+# 密码或证书只在 start 时用一次，密码不落盘。通道断了不会自动重连。
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 BASE="${SSH_HOLD_DIR:-$HOME/.ssh/hold}"
 DEFAULT_NAME="default"
@@ -42,14 +42,16 @@ embedded_lib() {
 # <<< EMBED_END
 
 LIB_DIR=""
+EMBED_DIR=""
 
-# 单文件版把运行库写进缓存目录再用；解包只在真正需要 lib 的命令上发生。
+# 单文件版把内嵌的运行时文件写进缓存目录再用；只在真正需要它们时才解包。
 unpack_embedded() {
   local cache tmp
+  [[ -n "$EMBED_DIR" ]] && return 0
   (( HAS_EMBEDDED )) || return 1
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/ssh-hold/lib-${VERSION}"
-  if [[ -f "$cache/paste.py" && -x "$cache/askpass" ]]; then
-    LIB_DIR="$cache"
+  if [[ -f "$cache/paste.py" && -x "$cache/askpass" && -f "$cache/SKILL.md" ]]; then
+    EMBED_DIR="$cache"
     return 0
   fi
   mkdir -p "$(dirname "$cache")" || return 1
@@ -64,7 +66,7 @@ unpack_embedded() {
     rm -rf "$tmp"
   fi
   [[ -f "$cache/paste.py" ]] || return 1
-  LIB_DIR="$cache"
+  EMBED_DIR="$cache"
 }
 
 # lib/ 的查找顺序：环境变量 > 安装布局 > 源码树 > 旧版固定路径 > 单文件内嵌。
@@ -83,7 +85,8 @@ find_lib() {
       return 0
     fi
   done
-  unpack_embedded
+  unpack_embedded || return 1
+  LIB_DIR="$EMBED_DIR"
 }
 
 resolve_lib() {
@@ -94,23 +97,48 @@ resolve_lib() {
   die "找不到运行库（askpass / paste.py）。请重新安装，或用 SSH_HOLD_LIB 指定 lib 目录。"
 }
 
+SKILL_FILE=""
+
+# SKILL.md 的查找顺序：安装布局 > 源码树 > SSH_HOLD_LIB > 单文件内嵌解出来的缓存。
+# 不复用 find_lib：本机若装过旧版，它会先命中那个没有 SKILL.md 的 lib 目录，
+# 单文件版就再也走不到内嵌那一步了。
+find_skill() {
+  [[ -n "$SKILL_FILE" ]] && return 0
+  local cand
+  for cand in "$SELF_DIR/../share/ssh-hold/SKILL.md" "$SELF_DIR/../skill/SKILL.md"; do
+    if [[ -f "$cand" ]]; then
+      # 展开路径里的 bin/..，version 打出来才好看。
+      SKILL_FILE="$(cd -P "$(dirname "$cand")" && pwd)/SKILL.md"
+      return 0
+    fi
+  done
+  if [[ -n "${SSH_HOLD_LIB:-}" && -f "$SSH_HOLD_LIB/SKILL.md" ]]; then
+    SKILL_FILE="$SSH_HOLD_LIB/SKILL.md"
+    return 0
+  fi
+  unpack_embedded || return 1
+  [[ -f "$EMBED_DIR/SKILL.md" ]] || return 1
+  SKILL_FILE="$EMBED_DIR/SKILL.md"
+}
+
 usage() {
   cat <<'EOF'
 用法:
-  ssh-hold start [选项] 用户@地址     输入一次性密码，把通道撑开
-  ssh-hold paste [-n 名字] [--check]  读取剪贴板里的跳板机信息并撑开通道
+  ssh-hold start [选项] 用户@地址     用密码或证书把通道撑开
+  ssh-hold paste [-n 名字] [--check]  读剪贴板里的 JumpServer 连接信息并撑开
   ssh-hold run  [名字] -- 命令...     走这条通道在远端执行命令
   ssh-hold shell [名字]               走进远端交互终端
   ssh-hold status [名字]              看通道还在不在
   ssh-hold list                       列出所有通道
   ssh-hold stop [名字]                关掉通道
-  ssh-hold version                    显示版本和运行库位置
+  ssh-hold skill install              把用法教给 Claude Code / Codex
+  ssh-hold version                    显示版本和安装位置
 
 start 选项:
   -n, --name 名字          通道名，默认 default。多台机器同时撑开时用来区分
   -p, --port 端口          默认 22
-  --password-stdin         从标准输入读密码（给我用时用这个，避免密码进命令行）
-  --insecure               不校验主机指纹（临时跳板机地址常变时用）
+  --password-stdin         从标准输入读密码（给脚本 / Agent 用，密码不进命令行）
+  --insecure               不校验主机指纹（地址常变的临时机器才用）
   --key                    改用密钥登录，而不是密码
   -i, --identity 文件      指定密钥
   -o 选项                  额外传给 ssh，可重复
@@ -123,12 +151,17 @@ paste 选项:
   --keep-password-spaces   密码本身包含首尾空白时保留；默认去除复制时带上的首尾空白
   --insecure               不校验主机指纹（默认仍校验）
 
+skill 选项（详见 ssh-hold skill --help）:
+  --claude / --codex       只装给其中一个，默认按本机装了哪个自动挑
+  --dir 目录               装到指定的 skills 根目录
+
 例子:
-  ssh-hold start -p 2222 ubuntu@1.2.3.4
-  ssh-hold run -- uname -a
-  ssh-hold run us-1 -- 'ps aux | head'
-  ssh-hold shell
-  ssh-hold stop
+  ssh-hold start -n web -i ~/keys/vps.pem ubuntu@1.2.3.4
+  ssh-hold run web -- uname -a
+  ssh-hold run web -- 'ps aux | head'
+  ssh-hold shell web
+  ssh-hold stop web
+  ssh-hold skill install
 
 环境变量:
   SSH_HOLD_DIR             通道记录目录，默认 ~/.ssh/hold
@@ -138,9 +171,9 @@ paste 选项:
   - 名字写了就必须对得上，写错直接报错，不会退回去挑另一条通道执行
   - run 的远端命令前面一定要有 --，省略名字时也要写：ssh-hold run -- uname -a
   - 开着多条通道时，run / shell / stop 都必须写名字，不会替你猜
-  - 密码过期后，已经撑开的通道一般还能继续用；一旦断开，就必须拿新密码重新 start
+  - 凭据过期后，已经撑开的通道一般还能继续用；一旦断开就只能重新认证
   - 进来之后不要在远端敲 exit 关自己的登录；关通道用本机的 ssh-hold stop
-  - 如果跳板机有「最长会话时间」，到点还是会被踢，这个挡不住
+  - 如果服务器或堡垒机设了「最长会话时间」，到点还是会被踢，这个挡不住
 EOF
 }
 
@@ -211,7 +244,7 @@ ssh_through() {
   local name="$1"
   shift
   read_meta "$name"
-  master_check "$name" || die "通道 ${name} 已经断了。一次性密码无法重连，请拿新密码重新 start。"
+  master_check "$name" || die "通道 ${name} 已经断了，不会自动重连。证书通道用原来的 -i 再 start 一次；密码通道要重新拿到密码。"
   ssh \
     -o ControlPath="$(sock_path "$name")" \
     -o ControlMaster=no \
@@ -241,7 +274,7 @@ start_keepalive() {
   pidfile="$(pid_path "$name")"
   stop_keepalive "$name"
 
-  # 周期性在远端跑一个空命令，防止跳板机按「空闲」把连接掐掉。
+  # 周期性在远端跑一个空命令，防止对端按「空闲」把连接掐掉。
   nohup bash -c '
     name="$1"
     sock="$2"
@@ -349,7 +382,7 @@ cmd_start() {
       ssh_opts+=(-i "$identity" -o IdentitiesOnly=yes)
     fi
   else
-    # 临时跳板通常只认密码。先试密钥容易把次数用光，直接禁掉。
+    # 走密码时就别先试本机密钥：只认密码的服务器上容易把尝试次数用光。
     # 这里的逗号是 ssh 的选项值，加引号免得被当成数组分隔符。
     ssh_opts+=(
       -o "PreferredAuthentications=password,keyboard-interactive"
@@ -376,13 +409,13 @@ cmd_start() {
       SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-ssh-hold}" \
       ssh "${ssh_opts[@]}" "$target"
   else
-    echo "请输入一次性密码（输入时不会显示）："
+    echo "请输入密码（输入时不会显示）："
     ssh "${ssh_opts[@]}" "$target"
   fi
 
   if ! master_check "$name"; then
     rm -f "$sock"
-    die "通道没撑起来。密码错了、过期了，或者跳板机拒绝了连接。"
+    die "通道没撑起来。密码或密钥不对、凭据过期了，或者对方拒绝了连接。"
   fi
 
   write_meta "$name"
@@ -546,6 +579,107 @@ cmd_stop() {
   echo "已关闭通道：$name"
 }
 
+skill_usage() {
+  cat <<'EOF'
+用法:
+  ssh-hold skill install [选项]   把 SKILL.md 写进 AI 编程工具的 skills 目录
+  ssh-hold skill path [选项]      只显示会写到哪些位置，不动文件
+  ssh-hold skill show             把 SKILL.md 打到标准输出
+
+选项:
+  --claude        装给 Claude Code（~/.claude/skills/ssh-hold/）
+  --codex         装给 Codex（~/.codex/skills/ssh-hold/）
+  --dir 目录      装到指定的 skills 根目录，会在它下面建 ssh-hold/
+
+不写 --claude / --codex / --dir 时，按本机装了哪个自动挑：~/.claude 和 ~/.codex
+哪个存在就往哪个装，两个都在就都装。
+
+已有的 SKILL.md 内容不一样时，会先备份成 SKILL.md.bak.<时间戳> 再覆盖；
+内容一样则什么都不做。
+EOF
+}
+
+write_skill_to() {
+  local dest="$1" backup
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]]; then
+    if cmp -s "$SKILL_FILE" "$dest"; then
+      echo "已是最新：$dest"
+      return 0
+    fi
+    backup="$dest.bak.$(date "+%Y%m%d%H%M%S")"
+    cp "$dest" "$backup"
+    echo "旧的已备份到 $backup"
+  fi
+  cp "$SKILL_FILE" "$dest"
+  chmod 644 "$dest"
+  echo "已写入 $dest"
+}
+
+# Claude Code 和 Codex 用的是同一种 SKILL.md 格式，一份文件两边都能用。
+cmd_skill() {
+  local sub="install"
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    sub="$1"
+    shift
+  fi
+
+  local want_claude=0 want_codex=0 explicit=0
+  local extra_dirs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --claude) want_claude=1; explicit=1; shift ;;
+      --codex) want_codex=1; explicit=1; shift ;;
+      --dir)
+        [[ $# -ge 2 ]] || die "--dir 后面要跟 skills 根目录"
+        extra_dirs+=("$2"); explicit=1; shift 2 ;;
+      -h|--help) skill_usage; return 0 ;;
+      -*) die "未知选项: $1。看帮助: ssh-hold skill --help" ;;
+      *) die "多余参数: $1" ;;
+    esac
+  done
+
+  find_skill || die "找不到 SKILL.md。请重新安装 ssh-hold。"
+
+  case "$sub" in
+    show)
+      cat "$SKILL_FILE"
+      return 0
+      ;;
+    install|path) ;;
+    *) die "未知的 skill 子命令: ${sub}。可用: install / path / show" ;;
+  esac
+
+  if (( ! explicit )); then
+    [[ -d "$HOME/.claude" ]] && want_claude=1
+    [[ -d "$HOME/.codex" ]] && want_codex=1
+  fi
+
+  local targets=()
+  if (( want_claude )); then targets+=("$HOME/.claude/skills"); fi
+  if (( want_codex )); then targets+=("$HOME/.codex/skills"); fi
+  if (( ${#extra_dirs[@]} )); then targets+=("${extra_dirs[@]}"); fi
+
+  if (( ${#targets[@]} == 0 )); then
+    die "没找到 Claude Code（~/.claude）或 Codex（~/.codex）。
+用 --dir 指定 skills 根目录，或先装上其中一个。"
+  fi
+
+  local root
+  for root in "${targets[@]}"; do
+    if [[ "$sub" == "path" ]]; then
+      echo "$root/ssh-hold/SKILL.md"
+    else
+      write_skill_to "$root/ssh-hold/SKILL.md"
+    fi
+  done
+
+  if [[ "$sub" == "install" ]]; then
+    echo
+    echo "新开一个会话才会加载到。"
+  fi
+}
+
 cmd_version() {
   echo "ssh-hold $VERSION"
   echo "  程序: $SELF"
@@ -553,6 +687,11 @@ cmd_version() {
     echo "  运行库: $LIB_DIR"
   else
     echo "  运行库: 找不到（paste 和 --password-stdin 用不了）"
+  fi
+  if find_skill; then
+    echo "  技能文件: $SKILL_FILE"
+  else
+    echo "  技能文件: 找不到（ssh-hold skill install 用不了）"
   fi
   echo "  通道目录: $BASE"
 }
@@ -571,6 +710,7 @@ main() {
       resolve_lib
       python3 "$LIB_DIR/paste.py" "$SELF" "$@"
       ;;
+    skill) cmd_skill "$@" ;;
     start) cmd_start "$@" ;;
     run|exec) cmd_run "$@" ;;
     shell|sh) cmd_shell "$@" ;;
