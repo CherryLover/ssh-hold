@@ -99,9 +99,11 @@ download_release() {
   echo "正在下载 $tag ..." >&2
   fetch "$url" >"$tmp/pkg.tar.gz" || die "下载失败: $url"
   tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" || die "解压失败，下载的文件可能不完整"
-  SRC="$(find "$tmp" -maxdepth 2 -type f -path '*/bin/ssh-hold' -exec dirname {} \; \
-    | head -1 | xargs -I{} dirname {})"
-  [[ -n "$SRC" && -f "$SRC/bin/ssh-hold" ]] || die "发布包里找不到 bin/ssh-hold"
+  # 包里是 ssh-hold-<版本>/bin/ssh-hold，从 $tmp 数下来是第 3 层。
+  local found
+  found="$(find "$tmp" -maxdepth 3 -type f -path '*/bin/ssh-hold' | head -1)"
+  [[ -n "$found" ]] || die "发布包里找不到 bin/ssh-hold"
+  SRC="${found%/bin/ssh-hold}"
 }
 
 install_file() {

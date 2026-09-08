@@ -350,8 +350,9 @@ cmd_start() {
     fi
   else
     # 临时跳板通常只认密码。先试密钥容易把次数用光，直接禁掉。
+    # 这里的逗号是 ssh 的选项值，加引号免得被当成数组分隔符。
     ssh_opts+=(
-      -o PreferredAuthentications=password,keyboard-interactive
+      -o "PreferredAuthentications=password,keyboard-interactive"
       -o PubkeyAuthentication=no
     )
   fi
