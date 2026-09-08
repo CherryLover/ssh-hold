@@ -1,0 +1,4 @@
+#!/bin/sh
+# Only SSH invokes this helper; the password exists only in the environment.
+test -n "${SSH_HOLD_PASSWORD:-}" || exit 1
+printf '%s\n' "$SSH_HOLD_PASSWORD"

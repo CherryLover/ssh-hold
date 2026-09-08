@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的标签（例如 v1.0.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 确定版本号
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          # 标签和 bin/ssh-hold 里的 VERSION 必须一致，否则装完 `version` 会报错版本。
+          declared="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/ssh-hold | head -1)"
+          if [[ "$declared" != "$version" ]]; then
+            echo "标签 $tag 与 bin/ssh-hold 里的 VERSION=$declared 对不上" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: 测试
+        run: |
+          make lint
+          make test
+          make test-wire
+
+      - name: 打包
+        run: make dist VERSION=${{ steps.version.outputs.version }}
+
+      - name: 验证发布包能装能跑
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          tar -xzf "dist/ssh-hold-${version}.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/ssh-hold-${version}/install.sh" --prefix "$RUNNER_TEMP/opt"
+          "$RUNNER_TEMP/opt/bin/ssh-hold" version | tee /dev/stderr | grep -q "ssh-hold ${version}"
+          # 挪出仓库再跑，否则它会摸到源码树里的 lib/，测不到内嵌那条路径。
+          cp dist/ssh-hold "$RUNNER_TEMP/standalone"
+          export HOME="$RUNNER_TEMP/fakehome" && mkdir -p "$HOME"
+          "$RUNNER_TEMP/standalone" version | tee /dev/stderr | grep -q "ssh-hold ${version}"
+          test -f "$HOME/.cache/ssh-hold/lib-${version}/paste.py"
+
+      - name: 生成 Release 说明
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          {
+            echo "## 安装"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash"
+            echo '```'
+            echo
+            echo "或者只下一个文件丢进 PATH："
+            echo
+            echo '```bash'
+            echo "curl -fsSLo ~/.local/bin/ssh-hold \\"
+            echo "  https://github.com/${{ github.repository }}/releases/download/v${version}/ssh-hold"
+            echo "chmod +x ~/.local/bin/ssh-hold"
+            echo '```'
+            echo
+            echo "## 产物"
+            echo
+            echo "- \`ssh-hold-${version}.tar.gz\` — 完整发布包（可执行文件、运行库、man 手册、补全、安装脚本）"
+            echo "- \`ssh-hold\` — 单文件版，运行库已内嵌"
+            echo "- \`SHA256SUMS\` — 校验和"
+            echo
+            echo "## 校验和"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "## 更新内容"
+            echo
+            # CHANGELOG.md 里最上面那一节
+            awk '/^## /{ n++ } n == 1' CHANGELOG.md | tail -n +2
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ssh-hold ${{ steps.version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/ssh-hold-${{ steps.version.outputs.version }}.tar.gz
+            dist/ssh-hold
+            dist/SHA256SUMS

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS 上是 bash 3.2，Linux 上是 bash 5.x，两边都要过。
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 shellcheck
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - run: make lint
+
+      - run: make test
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 真实 SSH 握手测试（本地回环）
+        run: make test-wire
+
+      - name: 打包并验证发布产物
+        run: make dist
+
+      - name: 装到临时前缀再跑一遍
+        run: |
+          set -euo pipefail
+          version="$(make version)"
+          tar -xzf "dist/ssh-hold-${version}.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/ssh-hold-${version}/install.sh" --prefix "$RUNNER_TEMP/opt"
+          "$RUNNER_TEMP/opt/bin/ssh-hold" version
+          "$RUNNER_TEMP/opt/bin/ssh-hold" list
+          test -f "$RUNNER_TEMP/opt/lib/ssh-hold/paste.py"
+          test -f "$RUNNER_TEMP/opt/share/man/man1/ssh-hold.1"
+
+      - name: 单文件版自检
+        run: |
+          set -euo pipefail
+          # 换个 HOME，确认它靠内嵌副本工作，而不是摸到别处装好的 lib。
+          export HOME="$RUNNER_TEMP/fakehome"
+          mkdir -p "$HOME"
+          cp dist/ssh-hold "$RUNNER_TEMP/ssh-hold-standalone"
+          "$RUNNER_TEMP/ssh-hold-standalone" version
+          test -f "$HOME/.cache/ssh-hold"/lib-*/paste.py

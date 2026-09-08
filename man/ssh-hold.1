@@ -1,0 +1,181 @@
+.TH SSH-HOLD 1 "2026-09-08" "ssh-hold" "用户命令"
+.SH 名称
+ssh\-hold \- 撑开并复用一条 SSH 连接
+.SH 概述
+.B ssh\-hold start
+[选项] 用户@地址
+.br
+.B ssh\-hold paste
+[\fB\-n\fR 名字] [\fB\-\-check\fR]
+.br
+.B ssh\-hold run
+[名字] \fB\-\-\fR 命令...
+.br
+.B ssh\-hold shell
+[名字]
+.br
+.B ssh\-hold status
+[名字]
+.br
+.B ssh\-hold list
+.br
+.B ssh\-hold stop
+[名字]
+.br
+.B ssh\-hold version
+.SH 描述
+.B ssh\-hold
+基于 OpenSSH 的 ControlMaster，把一条已经建立的 SSH 连接留在后台。密码或证书只在第一次
+.B start
+时用一次，之后所有命令都走这条已经打开的通道，不再重新认证。
+.PP
+它解决两类问题：跳板机发的一次性密码，用过一次就作废，普通做法没法再开第二个终端；
+以及把一条连接共享给自动化工具或 AI Agent 使用，不必反复把凭据交出去。
+.PP
+密码全程不落盘。通道信息记在
+.IR ~/.ssh/hold/<名字>/ ，
+后台每 20 秒在远端跑一次空命令保活，连续失败 3 次就放弃，通道视为已断。
+一旦断开无法自动重连：密码通道需要拿新密码重来，证书通道用原来的密钥再
+.B start
+一次即可。
+.SH 命令
+.TP
+.B start
+用密码或证书撑开一条新通道。
+.TP
+.B paste
+读取 macOS 剪贴板里的跳板机连接信息（名称、主机、端口、用户名、密码、协议、过期时间），
+解析后直接撑开通道，不必手工敲一遍。
+.TP
+.B run
+在已撑开的通道上执行远端命令。远端命令必须写在
+.B \-\-
+后面。远端的退出码会原样返回。
+.TP
+.B shell
+进入远端交互终端。退出终端不会关掉通道。
+.TP
+.B status ", " list
+查看通道是否还畅通、保活进程在不在、远端到底是哪台机器。
+.TP
+.B stop
+断开通道并删掉对应的记录目录。
+.TP
+.B version
+显示版本号、程序路径、运行库路径和通道目录。
+.SH START 选项
+.TP
+.BR \-n ", " \-\-name " 名字"
+通道名，默认 \fBdefault\fR。只能用字母、数字、点、下划线、短横线。
+.TP
+.BR \-p ", " \-\-port " 端口"
+远端端口，默认 22。
+.TP
+.B \-\-password\-stdin
+从标准输入读密码。密码不会出现在命令行参数里，适合脚本和 Agent 调用。
+.TP
+.B \-\-insecure
+不校验主机指纹。跳板机地址经常变时用，仅限临时场景。
+.TP
+.B \-\-key
+改用密钥登录而不是密码。
+.TP
+.BR \-i ", " \-\-identity " 文件"
+指定私钥文件，隐含
+.BR \-\-key 。
+私钥权限必须是 600。
+.TP
+.BI \-o " 选项"
+额外透传给 ssh 的选项，可重复。
+.SH PASTE 选项
+.TP
+.BR \-n ", " \-\-name " 名字"
+覆盖从剪贴板里自动生成的通道名。
+.TP
+.B \-\-check
+显示全部解析出来的字段，包含明文密码，但不连接。请勿截图或转发。
+.TP
+.B \-\-verify\-password
+在本机比较剪贴板密码和手动输入的密码是否一致。不联网、不显示密码内容。
+.TP
+.B \-\-debug
+显示 SSH 连接过程，不显示密码，不自动重试。
+.TP
+.B \-\-keep\-password\-spaces
+保留密码本身的首尾空白。默认会去掉复制时带上的首尾空白。
+.SH 环境变量
+.TP
+.B SSH_HOLD_DIR
+通道记录目录，默认
+.IR ~/.ssh/hold 。
+.TP
+.B SSH_HOLD_LIB
+运行库目录。默认跟随可执行文件所在的那份安装，一般不用设。
+.SH 退出状态
+.B run
+返回远端命令的退出码。其余命令成功返回 0，失败返回非 0 并在标准错误上打印中文说明。
+.SH 文件
+.TP
+.I ~/.ssh/hold/<名字>/sock
+ControlMaster 复用套接字。
+.TP
+.I ~/.ssh/hold/<名字>/meta
+目标地址、端口、开通时间、认证方式。不含密码。
+.TP
+.I ~/.ssh/hold/<名字>/keepalive.log
+保活日志。通道异常时先看这里。
+.SH 例子
+.PP
+用一次性密码撑开跳板机通道，密码走标准输入：
+.PP
+.nf
+.RS
+printf '%s\\n' '一次性密码' | ssh\-hold start \-n us\-1 \-p 2222 \-\-password\-stdin ubuntu@跳板机
+.RE
+.fi
+.PP
+用证书撑开：
+.PP
+.nf
+.RS
+ssh\-hold start \-n us\-1 \-i ~/keys/prod.pem ubuntu@1.2.3.4
+.RE
+.fi
+.PP
+在通道上执行命令，带管道的整条加单引号：
+.PP
+.nf
+.RS
+ssh\-hold run us\-1 \-\- 'ps aux | head \-20'
+.RE
+.fi
+.PP
+让 scp 复用同一条通道，同样不用再认证：
+.PP
+.nf
+.RS
+scp \-o ControlPath="$HOME/.ssh/hold/us\-1/sock" \-o ControlMaster=no \\
+    本地文件 ubuntu@1.2.3.4:/tmp/
+.RE
+.fi
+.SH 注意
+.PP
+写了通道名就必须对得上。名字写错会直接报错，不会退回去挑另一条通道执行——猜错等于在别的机器上干活。
+.PP
+不要在非交互场景里跑
+.BR "ssh-hold shell" 、
+不带
+.B \-\-password\-stdin
+的
+.BR start ，
+以及远端的
+.BR top / vim / less ，
+这些都会一直等输入。
+.PP
+如果跳板机设了最长会话时间，到点还是会被踢，这个挡不住。
+.SH 参见
+.BR ssh (1),
+.BR ssh_config (5),
+.BR scp (1)
+.SH 项目主页
+https://github.com/CherryLover/ssh\-hold

@@ -1,0 +1,57 @@
+#compdef ssh-hold
+# zsh completion for ssh-hold
+
+_ssh_hold_names() {
+  local base="${SSH_HOLD_DIR:-$HOME/.ssh/hold}" meta names=()
+  for meta in "$base"/*/meta(N); do
+    names+=("${${meta:h}:t}")
+  done
+  _describe -t channels '通道' names
+}
+
+_ssh_hold() {
+  local -a commands
+  commands=(
+    'start:输入密码或用证书，把通道撑开'
+    'paste:读取剪贴板里的跳板机信息并撑开通道'
+    'run:在已撑开的通道上执行远端命令'
+    'shell:进入远端交互终端'
+    'status:看通道还在不在'
+    'list:列出所有通道'
+    'stop:关掉通道'
+    'version:显示版本和运行库位置'
+  )
+
+  _arguments -C '1: :->command' '*:: :->args'
+
+  case $state in
+    command) _describe -t commands '命令' commands ;;
+    args)
+      case $words[1] in
+        start)
+          _arguments \
+            '(-n --name)'{-n,--name}'[通道名]:名字:' \
+            '(-p --port)'{-p,--port}'[端口]:端口:' \
+            '--password-stdin[从标准输入读密码]' \
+            '--insecure[不校验主机指纹]' \
+            '--key[改用密钥登录]' \
+            '(-i --identity)'{-i,--identity}'[指定密钥]:密钥文件:_files' \
+            '*-o[额外的 ssh 选项]:选项:' \
+            '*:目标:_ssh_hosts'
+          ;;
+        paste)
+          _arguments \
+            '(-n --name)'{-n,--name}'[覆盖自动生成的通道名]:名字:' \
+            '--check[显示解析字段（含明文密码），不连接]' \
+            '--debug[显示连接过程，不显示密码]' \
+            '--verify-password[本地核对密码是否一致]' \
+            '--keep-password-spaces[保留密码首尾空白]' \
+            '--insecure[不校验主机指纹]'
+          ;;
+        run|exec|shell|sh|status|stop|close|exit) _ssh_hold_names ;;
+      esac
+      ;;
+  esac
+}
+
+_ssh_hold "$@"

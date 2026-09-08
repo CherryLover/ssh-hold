@@ -1,0 +1,583 @@
+#!/usr/bin/env bash
+# ssh-hold — 用一次性密码把 SSH 通道撑住，后续命令复用同一条连接。
+# 密码只在 start 时用一次，不会落盘。通道断了就只能重新拿密码再 start。
+set -euo pipefail
+
+VERSION="1.0.0"
+
+BASE="${SSH_HOLD_DIR:-$HOME/.ssh/hold}"
+DEFAULT_NAME="default"
+
+die() {
+  echo "ssh-hold: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "找不到命令: $1"
+}
+
+# 解析自身真实路径（逐层跟随符号链接），用来定位同一份安装里的 lib/。
+self_path() {
+  local src dir
+  src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  printf '%s/%s' "$dir" "$(basename "$src")"
+}
+
+SELF="$(self_path)"
+SELF_DIR="$(dirname "$SELF")"
+
+# >>> EMBED_START  单文件构建时，scripts/build-standalone.py 会替换掉这一段。
+# 源码树里没有内嵌副本，运行库从 lib/ 目录找。
+HAS_EMBEDDED=0
+embedded_lib() {
+  return 1
+}
+# <<< EMBED_END
+
+LIB_DIR=""
+
+# 单文件版把运行库写进缓存目录再用；解包只在真正需要 lib 的命令上发生。
+unpack_embedded() {
+  local cache tmp
+  (( HAS_EMBEDDED )) || return 1
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/ssh-hold/lib-${VERSION}"
+  if [[ -f "$cache/paste.py" && -x "$cache/askpass" ]]; then
+    LIB_DIR="$cache"
+    return 0
+  fi
+  mkdir -p "$(dirname "$cache")" || return 1
+  tmp="$(mktemp -d "${cache}.XXXXXX")" || return 1
+  chmod 700 "$tmp"
+  if ! embedded_lib "$tmp"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  # 并发解包时谁先落地算谁的，后到的丢掉自己那份。
+  if [[ -f "$cache/paste.py" ]] || ! mv "$tmp" "$cache" 2>/dev/null; then
+    rm -rf "$tmp"
+  fi
+  [[ -f "$cache/paste.py" ]] || return 1
+  LIB_DIR="$cache"
+}
+
+# lib/ 的查找顺序：环境变量 > 安装布局 > 源码树 > 旧版固定路径 > 单文件内嵌。
+# 找不到时返回非 0，由调用方决定是报错还是接着往下走。
+find_lib() {
+  [[ -n "$LIB_DIR" ]] && return 0
+  if [[ -n "${SSH_HOLD_LIB:-}" ]]; then
+    [[ -f "$SSH_HOLD_LIB/paste.py" ]] || return 1
+    LIB_DIR="$SSH_HOLD_LIB"
+    return 0
+  fi
+  local cand
+  for cand in "$SELF_DIR/../lib/ssh-hold" "$SELF_DIR/../lib" "$HOME/.local/lib/ssh-hold"; do
+    if [[ -f "$cand/paste.py" && -f "$cand/askpass" ]]; then
+      LIB_DIR="$(cd -P "$cand" && pwd)"
+      return 0
+    fi
+  done
+  unpack_embedded
+}
+
+resolve_lib() {
+  find_lib && return 0
+  if [[ -n "${SSH_HOLD_LIB:-}" ]]; then
+    die "SSH_HOLD_LIB 里没有 paste.py: $SSH_HOLD_LIB"
+  fi
+  die "找不到运行库（askpass / paste.py）。请重新安装，或用 SSH_HOLD_LIB 指定 lib 目录。"
+}
+
+usage() {
+  cat <<'EOF'
+用法:
+  ssh-hold start [选项] 用户@地址     输入一次性密码，把通道撑开
+  ssh-hold paste [-n 名字] [--check]  读取剪贴板里的跳板机信息并撑开通道
+  ssh-hold run  [名字] -- 命令...     走这条通道在远端执行命令
+  ssh-hold shell [名字]               走进远端交互终端
+  ssh-hold status [名字]              看通道还在不在
+  ssh-hold list                       列出所有通道
+  ssh-hold stop [名字]                关掉通道
+  ssh-hold version                    显示版本和运行库位置
+
+start 选项:
+  -n, --name 名字          通道名，默认 default。多台机器同时撑开时用来区分
+  -p, --port 端口          默认 22
+  --password-stdin         从标准输入读密码（给我用时用这个，避免密码进命令行）
+  --insecure               不校验主机指纹（临时跳板机地址常变时用）
+  --key                    改用密钥登录，而不是密码
+  -i, --identity 文件      指定密钥
+  -o 选项                  额外传给 ssh，可重复
+
+paste 选项:
+  -n, --name 名字          覆盖自动生成的通道名
+  --check                  显示全部解析字段（包括明文密码），不连接；请勿外传
+  --debug                  显示 SSH 连接过程，不显示密码，不自动重试
+  --verify-password        本地核对剪贴板密码与手动输入是否一致，不联网、不显示密码
+  --keep-password-spaces   密码本身包含首尾空白时保留；默认去除复制时带上的首尾空白
+  --insecure               不校验主机指纹（默认仍校验）
+
+例子:
+  ssh-hold start -p 2222 ubuntu@1.2.3.4
+  ssh-hold run -- uname -a
+  ssh-hold run us-1 -- 'ps aux | head'
+  ssh-hold shell
+  ssh-hold stop
+
+环境变量:
+  SSH_HOLD_DIR             通道记录目录，默认 ~/.ssh/hold
+  SSH_HOLD_LIB             运行库目录，默认跟随可执行文件所在的安装
+
+注意:
+  - 名字写了就必须对得上，写错直接报错，不会退回去挑另一条通道执行
+  - run 的远端命令前面一定要有 --，省略名字时也要写：ssh-hold run -- uname -a
+  - 开着多条通道时，run / shell / stop 都必须写名字，不会替你猜
+  - 密码过期后，已经撑开的通道一般还能继续用；一旦断开，就必须拿新密码重新 start
+  - 进来之后不要在远端敲 exit 关自己的登录；关通道用本机的 ssh-hold stop
+  - 如果跳板机有「最长会话时间」，到点还是会被踢，这个挡不住
+EOF
+}
+
+session_dir() {
+  printf '%s/%s' "$BASE" "$1"
+}
+
+sock_path() {
+  printf '%s/%s/sock' "$BASE" "$1"
+}
+
+meta_path() {
+  printf '%s/%s/meta' "$BASE" "$1"
+}
+
+pid_path() {
+  printf '%s/%s/keepalive.pid' "$BASE" "$1"
+}
+
+log_path() {
+  printf '%s/%s/keepalive.log' "$BASE" "$1"
+}
+
+ensure_base() {
+  mkdir -p "$BASE"
+  chmod 700 "$BASE"
+}
+
+list_names() {
+  ensure_base
+  local d
+  shopt -s nullglob
+  for d in "$BASE"/*/meta; do
+    basename "$(dirname "$d")"
+  done
+  shopt -u nullglob
+}
+
+read_meta() {
+  local name="$1" file
+  file="$(meta_path "$name")"
+  [[ -f "$file" ]] || die "没有名为 ${name} 的通道。先 ssh-hold start，或 ssh-hold list 看看。"
+  # shellcheck disable=SC1090
+  source "$file"
+  [[ -n "${TARGET:-}" ]] || die "通道 ${name} 的记录坏了，建议 ssh-hold stop ${name} 后重开。"
+}
+
+write_meta() {
+  local name="$1" dest
+  dest="$(meta_path "$name")"
+  umask 077
+  cat >"$dest" <<EOF
+TARGET=$(printf '%q' "$TARGET")
+PORT=$(printf '%q' "$PORT")
+NAME=$(printf '%q' "$name")
+STARTED=$(printf '%q' "$STARTED")
+AUTH=$(printf '%q' "$AUTH")
+INSECURE=$(printf '%q' "$INSECURE")
+EOF
+}
+
+master_check() {
+  local name="$1"
+  ssh -O check -o ControlPath="$(sock_path "$name")" dummy >/dev/null 2>&1
+}
+
+ssh_through() {
+  local name="$1"
+  shift
+  read_meta "$name"
+  master_check "$name" || die "通道 ${name} 已经断了。一次性密码无法重连，请拿新密码重新 start。"
+  ssh \
+    -o ControlPath="$(sock_path "$name")" \
+    -o ControlMaster=no \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -p "$PORT" \
+    "$TARGET" \
+    "$@"
+}
+
+stop_keepalive() {
+  local name="$1" pidfile pid
+  pidfile="$(pid_path "$name")"
+  if [[ -f "$pidfile" ]]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+  fi
+}
+
+start_keepalive() {
+  local name="$1" sock log pidfile
+  sock="$(sock_path "$name")"
+  log="$(log_path "$name")"
+  pidfile="$(pid_path "$name")"
+  stop_keepalive "$name"
+
+  # 周期性在远端跑一个空命令，防止跳板机按「空闲」把连接掐掉。
+  nohup bash -c '
+    name="$1"
+    sock="$2"
+    log="$3"
+    port="$4"
+    target="$5"
+    fail=0
+    while [[ -S "$sock" ]]; do
+      if ssh -O check -o ControlPath="$sock" dummy >/dev/null 2>&1 \
+        && ssh -o ControlPath="$sock" -o ControlMaster=no -o BatchMode=yes \
+             -o ConnectTimeout=8 -p "$port" "$target" true >/dev/null 2>&1; then
+        fail=0
+      else
+        fail=$((fail + 1))
+        printf "%s keepalive 失败 (%s)\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$fail" >>"$log"
+        if (( fail >= 3 )); then
+          printf "%s 通道已断，停止保活\n" "$(date "+%Y-%m-%d %H:%M:%S")" >>"$log"
+          exit 1
+        fi
+      fi
+      sleep 20
+    done
+  ' ssh-hold-keepalive "$name" "$sock" "$log" "$PORT" "$TARGET" >>"$log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
+cmd_start() {
+  need_cmd ssh
+  ensure_base
+
+  local name="$DEFAULT_NAME" port="22" password_stdin=0 insecure=0 use_key=0
+  local identity="" extra_opts=()
+  local target=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n|--name) [[ $# -ge 2 ]] || die "--name 后面要跟名字"; name="$2"; shift 2 ;;
+      -p|--port) [[ $# -ge 2 ]] || die "--port 后面要跟端口"; port="$2"; shift 2 ;;
+      --password-stdin) password_stdin=1; shift ;;
+      --insecure) insecure=1; shift ;;
+      --key) use_key=1; shift ;;
+      -i|--identity) [[ $# -ge 2 ]] || die "--identity 后面要跟密钥文件"; identity="$2"; use_key=1; shift 2 ;;
+      -o) [[ $# -ge 2 ]] || die "-o 后面要跟 ssh 选项"; extra_opts+=(-o "$2"); shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      --) shift; break ;;
+      -*) die "未知选项: $1" ;;
+      *)
+        if [[ -z "$target" ]]; then
+          target="$1"
+          shift
+        else
+          die "多余参数: $1"
+        fi
+        ;;
+    esac
+  done
+
+  [[ -n "$target" ]] || die "请提供 用户@地址，例如 ubuntu@1.2.3.4"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "通道名只能用字母、数字、点、下划线、短横线"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || die "端口不合法: $port"
+
+  local dir sock
+  dir="$(session_dir "$name")"
+  sock="$(sock_path "$name")"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+
+  if master_check "$name"; then
+    die "通道 ${name} 已经在了。要重开先: ssh-hold stop ${name}"
+  fi
+  rm -f "$sock"
+
+  TARGET="$target"
+  PORT="$port"
+  STARTED="$(date "+%Y-%m-%d %H:%M:%S")"
+  AUTH="password"
+  INSECURE="$insecure"
+  if (( use_key )); then
+    AUTH="key"
+  fi
+
+  local ssh_opts=(
+    -fN
+    -p "$port"
+    -o ControlMaster=yes
+    -o ControlPath="$sock"
+    -o ControlPersist=yes
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=4
+    -o TCPKeepAlive=yes
+    -o NumberOfPasswordPrompts=1
+    -o ExitOnForwardFailure=yes
+  )
+
+  if (( insecure )); then
+    ssh_opts+=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+  else
+    ssh_opts+=(-o StrictHostKeyChecking=accept-new)
+  fi
+
+  if (( use_key )); then
+    ssh_opts+=(-o PreferredAuthentications=publickey)
+    if [[ -n "$identity" ]]; then
+      [[ -f "$identity" ]] || die "密钥文件不存在: $identity"
+      ssh_opts+=(-i "$identity" -o IdentitiesOnly=yes)
+    fi
+  else
+    # 临时跳板通常只认密码。先试密钥容易把次数用光，直接禁掉。
+    ssh_opts+=(
+      -o PreferredAuthentications=password,keyboard-interactive
+      -o PubkeyAuthentication=no
+    )
+  fi
+
+  if (( ${#extra_opts[@]} )); then
+    ssh_opts+=("${extra_opts[@]}")
+  fi
+
+  echo "正在撑开通道 ${name} -> ${target}:${port} ..."
+  if (( use_key )); then
+    ssh "${ssh_opts[@]}" "$target"
+  elif (( password_stdin )); then
+    local password=""
+    IFS= read -r password || true
+    [[ -n "$password" ]] || die "标准输入里没有密码"
+    resolve_lib
+    local askpass="$LIB_DIR/askpass"
+    [[ -x "$askpass" ]] || die "找不到密码输入助手: $askpass"
+    # Let SSH request the password directly, without matching terminal output.
+    SSH_HOLD_PASSWORD="$password" SSH_ASKPASS="$askpass" \
+      SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-ssh-hold}" \
+      ssh "${ssh_opts[@]}" "$target"
+  else
+    echo "请输入一次性密码（输入时不会显示）："
+    ssh "${ssh_opts[@]}" "$target"
+  fi
+
+  if ! master_check "$name"; then
+    rm -f "$sock"
+    die "通道没撑起来。密码错了、过期了，或者跳板机拒绝了连接。"
+  fi
+
+  write_meta "$name"
+  start_keepalive "$name"
+
+  echo
+  echo "通道已撑开：$name"
+  echo "  目标: $target:$port"
+  echo "  时间: $STARTED"
+  echo
+  echo "之后可以这样用："
+  echo "  ssh-hold run $name -- uname -a"
+  echo "  ssh-hold run $name -- 'ps aux | head'"
+  echo "  ssh-hold shell $name"
+  echo "  ssh-hold status $name"
+  echo "  ssh-hold stop $name"
+}
+
+existing_names() {
+  local n
+  NAMES=()
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && NAMES+=("$n")
+  done < <(list_names)
+}
+
+# 写了名字就必须命中，绝不退回去猜别的通道——猜错等于在别的机器上干活。
+resolve_name() {
+  local maybe="${1:-}"
+  existing_names
+
+  if [[ -n "$maybe" ]]; then
+    if [[ -f "$(meta_path "$maybe")" ]]; then
+      printf '%s' "$maybe"
+      return 0
+    fi
+    if (( ${#NAMES[@]} == 0 )); then
+      die "没有名为 ${maybe} 的通道，现在也没有任何通道，不执行。先 ssh-hold start 用户@地址"
+    fi
+    die "没有名为 ${maybe} 的通道，不执行。现有: ${NAMES[*]}"
+  fi
+
+  if (( ${#NAMES[@]} == 1 )); then
+    printf '%s' "${NAMES[0]}"
+    return 0
+  fi
+  if (( ${#NAMES[@]} == 0 )); then
+    die "现在没有撑开的通道。先 ssh-hold start 用户@地址"
+  fi
+  die "有多条通道，请写名字。现有: ${NAMES[*]}"
+}
+
+cmd_run() {
+  local name=""
+  [[ $# -gt 0 ]] || die "用法: ssh-hold run [名字] -- 命令...  例如: ssh-hold run -- uname -a"
+
+  if [[ "$1" == "--" ]]; then
+    shift
+    name="$(resolve_name)"
+  else
+    # 第一个参数一律当通道名。不存在就停下，不能顺手当成远端命令跑到别的通道上。
+    if [[ ! -f "$(meta_path "$1")" ]]; then
+      existing_names
+      if (( ${#NAMES[@]} == 0 )); then
+        die "没有名为 ${1} 的通道，现在也没有任何通道，不执行。先 ssh-hold start 用户@地址"
+      fi
+      die "没有名为 ${1} 的通道，不执行。现有: ${NAMES[*]}
+如果 ${1} 是要在远端执行的命令，前面要加 --：ssh-hold run 名字 -- ${1} ..."
+    fi
+    name="$1"
+    shift
+    [[ $# -gt 0 ]] || die "请在 -- 后面写要执行的命令，例如: ssh-hold run ${name} -- uname -a"
+    [[ "$1" == "--" ]] || die "通道名后面要加 --，例如: ssh-hold run ${name} -- $*"
+    shift
+  fi
+
+  [[ $# -gt 0 ]] || die "请在 -- 后面写要执行的命令，例如: ssh-hold run ${name} -- uname -a"
+  ssh_through "$name" "$@"
+}
+
+cmd_shell() {
+  local name
+  (( $# <= 1 )) || die "shell 只收一个通道名，多余参数: ${*:2}"
+  name="$(resolve_name "${1:-}")"
+  read_meta "$name"
+  master_check "$name" || die "通道 ${name} 已经断了。请拿新密码重新 start。"
+  echo "进入远端。出来时用 Ctrl+D 或 exit；通道本身不会因此关掉。"
+  ssh \
+    -t \
+    -o ControlPath="$(sock_path "$name")" \
+    -o ControlMaster=no \
+    -o BatchMode=yes \
+    -p "$PORT" \
+    "$TARGET"
+}
+
+print_one_status() {
+  local name="$1" alive="已断开" keep="无"
+  read_meta "$name"
+  if master_check "$name"; then
+    alive="畅通"
+  fi
+  local pidfile pid
+  pidfile="$(pid_path "$name")"
+  if [[ -f "$pidfile" ]]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+      keep="在跑 (pid $pid)"
+    else
+      keep="停了"
+    fi
+  fi
+  printf '  %s\n' "$name"
+  printf '    目标: %s:%s\n' "$TARGET" "$PORT"
+  printf '    开通: %s\n' "$STARTED"
+  printf '    通道: %s\n' "$alive"
+  printf '    保活: %s\n' "$keep"
+  if [[ "$alive" == "畅通" ]]; then
+    local who
+    who="$(ssh_through "$name" 'printf "%s@%s" "$(id -un)" "$(hostname)"' 2>/dev/null || true)"
+    if [[ -n "$who" ]]; then
+      printf '    远端: %s\n' "$who"
+    fi
+  fi
+}
+
+cmd_status() {
+  local names=()
+  if [[ $# -gt 0 ]]; then
+    names=("$@")
+  else
+    while IFS= read -r n; do
+      [[ -n "$n" ]] && names+=("$n")
+    done < <(list_names)
+  fi
+  if (( ${#names[@]} == 0 )); then
+    echo "现在没有撑开的通道。"
+    return 0
+  fi
+  echo "SSH 通道："
+  local n
+  for n in "${names[@]}"; do
+    print_one_status "$n"
+  done
+}
+
+cmd_list() {
+  cmd_status
+}
+
+cmd_stop() {
+  local name
+  (( $# <= 1 )) || die "stop 一次只关一条，请分开写。多余参数: ${*:2}"
+  name="$(resolve_name "${1:-}")"
+  read_meta "$name" || true
+  stop_keepalive "$name"
+  if master_check "$name"; then
+    ssh -O exit -o ControlPath="$(sock_path "$name")" dummy >/dev/null 2>&1 || true
+  fi
+  rm -rf "$(session_dir "$name")"
+  echo "已关闭通道：$name"
+}
+
+cmd_version() {
+  echo "ssh-hold $VERSION"
+  echo "  程序: $SELF"
+  if find_lib; then
+    echo "  运行库: $LIB_DIR"
+  else
+    echo "  运行库: 找不到（paste 和 --password-stdin 用不了）"
+  fi
+  echo "  通道目录: $BASE"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" ]]; then
+    usage
+    exit 0
+  fi
+  shift || true
+  case "$cmd" in
+    -V|--version|version) cmd_version ;;
+    paste)
+      need_cmd python3
+      resolve_lib
+      python3 "$LIB_DIR/paste.py" "$SELF" "$@"
+      ;;
+    start) cmd_start "$@" ;;
+    run|exec) cmd_run "$@" ;;
+    shell|sh) cmd_shell "$@" ;;
+    status) cmd_status "$@" ;;
+    list|ls) cmd_list "$@" ;;
+    stop|close|exit) cmd_stop "$@" ;;
+    *) die "未知命令: ${cmd}。看帮助: ssh-hold --help" ;;
+  esac
+}
+
+main "$@"
