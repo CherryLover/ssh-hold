@@ -1,5 +1,13 @@
 # 更新记录
 
+## 未发布
+
+- **可以用 Homebrew 装了**：`brew install cherrylover/tap/ssh-hold`。Formula 在
+  [CherryLover/homebrew-tap](https://github.com/CherryLover/homebrew-tap)，装完带 man 手册和
+  bash / zsh 补全。tap 里有个定时任务每天自动把 formula 对齐到最新 Release，不需要手工改
+  版本号和校验和。程序本身没改动——它本来就是按可执行文件的位置找运行库，Homebrew 的
+  Cellar 布局直接就能用。
+
 ## 1.1.0 — 2026-09-08
 
 把「教 AI 工具怎么用它」这件事做进了命令本身。

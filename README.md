@@ -41,7 +41,13 @@ SSH 通道：
 
 ## 安装
 
-联网装最新发布版：
+macOS / Linuxbrew：
+
+```bash
+brew install cherrylover/tap/ssh-hold
+```
+
+不想用 Homebrew 的话，一行命令装最新发布版：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CherryLover/ssh-hold/main/install.sh | bash
@@ -77,7 +83,7 @@ chmod +x ~/.local/bin/ssh-hold
 ssh-hold version
 ```
 
-卸载：`./install.sh --uninstall`（不会动 `~/.ssh/hold` 里已经撑开的通道）。
+卸载：`brew uninstall ssh-hold`，或者脚本装的用 `./install.sh --uninstall`。两种都不会动 `~/.ssh/hold` 里已经撑开的通道，也不会删掉写进 `~/.claude`、`~/.codex` 的 skill。
 
 ## 教给 Claude Code / Codex
 
