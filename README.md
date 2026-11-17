@@ -180,13 +180,21 @@ ssh-hold shell web
 
 远端命令写在 `--` 后面。有空格、管道、重定向的整条加单引号，否则会被本机 shell 先吃掉。远端的退出码会原样传回来，可以直接做条件判断。
 
-传文件没有专门的子命令，让 `scp` / `rsync` 复用同一个套接字就行，同样不用再认证：
+### 传文件
 
 ```bash
-scp -o ControlPath="$HOME/.ssh/hold/web/sock" -o ControlMaster=no \
-    本地文件 ubuntu@1.2.3.4:/tmp/
+ssh-hold upload web ./app.tar.gz /tmp/                 # 本机 → 远端
+ssh-hold upload web ./dist ./nginx.conf /srv/app/      # 多个源、目录都行
+ssh-hold download web /var/log/nginx/error.log ./      # 远端 → 本机
+ssh-hold download web /etc/nginx /srv/app/.env ./备份/
+```
 
-rsync -avz -e "ssh -o ControlPath=$HOME/.ssh/hold/web/sock -o ControlMaster=no" \
+最后一个参数是目的地，前面的都是源；目录会整个传过去。通道名必须写，哪怕只开着一条——省略的话第一个路径就得被猜成名字，这个工具不猜。底下是复用同一个套接字的 `scp`，不用再认证，退出码原样传回；没有断点续传，传一半断了就重来。
+
+要增量同步或断点续传，让 `rsync` 复用同一个套接字：
+
+```bash
+rsync -avz --partial -e "ssh -o ControlPath=$HOME/.ssh/hold/web/sock -o ControlMaster=no" \
     本地目录/ ubuntu@1.2.3.4:/tmp/目录/
 ```
 
@@ -212,6 +220,8 @@ ssh-hold stop web     # 断开并删掉记录
 | 剪贴板撑开 | `ssh-hold paste [-n 名字] [--check]` |
 | 执行命令 | `ssh-hold run 名字 -- '命令'` |
 | 交互终端 | `ssh-hold shell 名字` |
+| 上传 | `ssh-hold upload 名字 本地路径... 远端路径` |
+| 下载 | `ssh-hold download 名字 远端路径... 本地路径` |
 | 关闭 | `ssh-hold stop 名字` |
 | 教给 AI 工具 | `ssh-hold skill install` |
 | 版本和路径 | `ssh-hold version` |
@@ -242,11 +252,13 @@ ssh-hold stop web     # 断开并删掉记录
 
 | 看到 | 意思 | 怎么办 |
 |---|---|---|
-| `通道 xxx 已经断了。一次性密码无法重连` | 通道掉了 | 密码通道要拿新密码重新 `start`；证书通道用原来的 `-i` 再 `start` |
+| `通道 xxx 已经断了，不会自动重连` | 通道掉了 | 证书通道用原来的 `-i` 再 `start`；密码通道要拿新密码重新 `start` |
 | `没有名为 xxx 的通道，不执行。现有: ...` | 名字写错，已经拦住 | 从 `list` 里照抄名字重跑 |
 | `通道名后面要加 --` | 漏了 `--` | `ssh-hold run 名字 -- 命令` |
 | `有多条通道，请写名字` | 省略了名字 | 补上名字 |
-| `通道没撑起来。密码错了、过期了，或者对方拒绝了连接。` | start 失败 | 确认密码是否还有效、地址端口对不对；指纹问题加 `--insecure` |
+| `用法: ssh-hold upload 名字 源路径... 目的路径` | 传文件时漏了通道名或目的地 | 名字、源、目的三样都要写 |
+| `通道 xxx 的记录坏了`，或 `list` 里显示 `记录: 坏了` | `meta` 文件损坏 | `ssh-hold stop xxx` 清掉再重开 |
+| `通道没撑起来。密码或密钥不对、凭据过期了，或者对方拒绝了连接。` | start 失败 | 确认凭据是否还有效、地址端口对不对；指纹问题加 `--insecure` |
 | `找不到运行库（askpass / paste.py）` | 安装不完整 | 重新装一遍，或用 `SSH_HOLD_LIB` 指定 lib 目录 |
 | `密钥文件不存在` / `Permissions too open` | 证书路径或权限 | 核对路径；`chmod 600 证书.pem` |
 
@@ -269,6 +281,8 @@ make install     # 装到 ~/.local
 ```
 
 `make test-wire` 用 paramiko 在 127.0.0.1 上起一个假的 SSH 服务端，跑完整条 `paste` → `start --password-stdin` → `run` 链路，断言服务端收到的密码和剪贴板里的完全一致，且密码没有出现在任何输出里。带引号、反斜杠、首尾空格的密码都在用例里。
+
+`test_cli` 把 `ssh` 和 `scp` 换成替身：假 `ssh` 让记录在案的通道都算畅通，假 `scp` 只记下收到的参数。验的是「挑的是哪条通道、让 scp 干了什么」，以及记录损坏、名字非法这些边角。
 
 `skill` 的用例在一个临时 HOME 里摆出 `.claude` / `.codex` 目录，验证自动识别、`--dir`、备份和幂等，不会碰你真实的配置。
 

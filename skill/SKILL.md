@@ -1,6 +1,6 @@
 ---
 name: ssh-hold
-description: 用本机 ssh-hold 在一条已经撑开的 SSH 通道上操作远程服务器：执行命令、看通道列表、传文件、必要时新开通道（pem 证书 / 密码 / JumpServer 剪贴板信息）。用户认证一次，之后你复用这条通道，不需要拿到他的密码或私钥。当用户提到"在那台机器/服务器上跑个命令"、"连一下 VPS"、"查一下服务器上的日志"、"撑开/保持/复用 SSH"、"通道还在不在"、"ssh-hold"、"用 pem 连服务器"、"一次性密码"、"跳板机"、"堡垒机"时触发。
+description: 用本机 ssh-hold 在一条已经撑开的 SSH 通道上操作远程服务器：执行命令、看通道列表、上传下载文件、必要时新开通道（pem 证书 / 密码 / JumpServer 剪贴板信息）。用户认证一次，之后你复用这条通道，不需要拿到他的密码或私钥。当用户提到"在那台机器/服务器上跑个命令"、"连一下 VPS"、"查一下服务器上的日志"、"把文件传到服务器上"、"把服务器上的文件拉下来"、"撑开/保持/复用 SSH"、"通道还在不在"、"ssh-hold"、"用 pem 连服务器"、"一次性密码"、"跳板机"、"堡垒机"时触发。
 ---
 
 # ssh-hold：在已撑开的 SSH 通道上操作远程服务器
@@ -130,7 +130,7 @@ printf '%s\n' '这里是密码' | ssh-hold start -n web -p 2222 --password-stdin
 ssh-hold stop web
 ```
 
-`stop` 会断开 SSH 并删掉 `~/.ssh/hold/web/` 整个目录。之后 `run` / `shell` 都不能用了。
+`stop` 会断开 SSH 并删掉 `~/.ssh/hold/web/` 整个目录。之后 `run` / `shell` / `upload` / `download` 都不能用了。
 
 ---
 
@@ -145,6 +145,8 @@ ssh-hold stop web
 | 密码走 stdin | `printf '%s\n' '密码' \| ssh-hold start -n 名字 --password-stdin 用户@地址` |
 | 证书撑开 | `ssh-hold start -n 名字 -i 证书.pem 用户@地址` |
 | 执行命令 | `ssh-hold run 名字 -- '命令'` |
+| 上传 | `ssh-hold upload 名字 本地路径... 远端路径` |
+| 下载 | `ssh-hold download 名字 远端路径... 本地路径` |
 | 交互终端（**只给用户**） | `ssh-hold shell 名字` |
 | 关闭 | `ssh-hold stop 名字` |
 | 版本和安装位置 | `ssh-hold version` |
@@ -153,23 +155,27 @@ ssh-hold stop web
 
 ## 传文件
 
-`ssh-hold` 本身没有传文件的子命令，但可以让 `scp` / `rsync` 直接复用同一个套接字（实测可行），同样不需要再认证：
+```bash
+ssh-hold upload web ./app.tar.gz /tmp/                 # 本机 → 远端
+ssh-hold upload web ./dist ./nginx.conf /srv/app/      # 多个源、目录都行
+ssh-hold download web /var/log/nginx/error.log ./      # 远端 → 本机
+```
+
+- **通道名必须写**，哪怕只开着一条。这两条命令不允许省略名字。
+- 最后一个参数是目的地，前面的全是源。目录会整个传过去。
+- 成功时没有任何输出，看退出码；失败时 `scp` 的报错会原样打出来（`No such file or directory`、`Permission denied`）。
+- **同名文件会被直接覆盖，不会问。** 往远端传之前、往本机取之前，先确认目的地那个路径上没有不该丢的东西；拿不准就先 `ssh-hold run 名字 -- 'ls -la 远端路径'` 看一眼。
+- 远端路径里的 `~` 要么加引号，要么干脆写绝对路径，否则会被本机 shell 展开成本机的家目录。
+- 没有断点续传，传一半断了只能重来。
+
+大文件、要增量同步或断点续传时，让 `rsync` 复用同一个套接字（非 22 端口在 `ssh` 后面加 `-p 端口`）：
 
 ```bash
-# 上传（非 22 端口要加 -P 端口）
-scp -o ControlPath="$HOME/.ssh/hold/web/sock" -o ControlMaster=no -o BatchMode=yes \
-    本地文件 ubuntu@1.2.3.4:/tmp/
-
-# 下载
-scp -o ControlPath="$HOME/.ssh/hold/web/sock" -o ControlMaster=no -o BatchMode=yes \
-    ubuntu@1.2.3.4:/tmp/远端文件 ./
-
-# rsync
-rsync -avz -e "ssh -o ControlPath=$HOME/.ssh/hold/web/sock -o ControlMaster=no" \
+rsync -avz --partial -e "ssh -o ControlPath=$HOME/.ssh/hold/web/sock -o ControlMaster=no" \
     本地目录/ ubuntu@1.2.3.4:/tmp/目录/
 ```
 
-用户@地址要和 `ssh-hold list` 里显示的**目标**完全一致。通道目录不是默认位置时（`SSH_HOLD_DIR` 有设），以 `ssh-hold version` 打出来的为准。
+这种写法里的用户@地址要和 `ssh-hold list` 里显示的**目标**完全一致。通道目录不是默认位置时（`SSH_HOLD_DIR` 有设），以 `ssh-hold version` 打出来的为准。
 
 ---
 
@@ -181,6 +187,8 @@ rsync -avz -e "ssh -o ControlPath=$HOME/.ssh/hold/web/sock -o ControlMaster=no" 
 | `没有名为 xxx 的通道，不执行。现有: ...` | 名字写错，已经拦住 | 从 `list` 里照抄名字重跑，别猜 |
 | `通道名后面要加 --` | 漏了 `--` | 补上：`ssh-hold run 名字 -- 命令` |
 | `有多条通道，请写名字。现有: a b` | 省略了名字 | 补上名字 |
+| `用法: ssh-hold upload 名字 源路径... 目的路径` | 传文件时漏了通道名或目的地 | 名字、源、目的三样都写全 |
+| `通道 xxx 的记录坏了`，或 `list` 里显示 `记录: 坏了` | `meta` 文件损坏 | 告诉用户，经同意后 `ssh-hold stop xxx` 清掉再重开 |
 | `stop 一次只关一条` | 一条命令里写了多个名字 | 分开写 |
 | `通道 xxx 已经在了。要重开先: ssh-hold stop xxx` | 重名 | 换名字，或确认用户同意后先 `stop`（密码通道慎重，停了可能开不回来） |
 | `通道没撑起来。密码或密钥不对、凭据过期了，或者对方拒绝了连接。` | start 失败 | 向用户确认凭据是否还有效 / 地址端口对不对；指纹问题可加 `--insecure` |

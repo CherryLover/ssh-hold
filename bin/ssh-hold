@@ -128,6 +128,8 @@ usage() {
   ssh-hold paste [-n 名字] [--check]  读剪贴板里的 JumpServer 连接信息并撑开
   ssh-hold run  [名字] -- 命令...     走这条通道在远端执行命令
   ssh-hold shell [名字]               走进远端交互终端
+  ssh-hold upload 名字 本地... 远端   把本机的文件或目录传到远端
+  ssh-hold download 名字 远端... 本地 把远端的文件或目录取回本机
   ssh-hold status [名字]              看通道还在不在
   ssh-hold list                       列出所有通道
   ssh-hold stop [名字]                关掉通道
@@ -160,6 +162,8 @@ skill 选项（详见 ssh-hold skill --help）:
   ssh-hold run web -- uname -a
   ssh-hold run web -- 'ps aux | head'
   ssh-hold shell web
+  ssh-hold upload web ./app.tar.gz /tmp/
+  ssh-hold download web /var/log/nginx/error.log ./
   ssh-hold stop web
   ssh-hold skill install
 
@@ -171,6 +175,7 @@ skill 选项（详见 ssh-hold skill --help）:
   - 名字写了就必须对得上，写错直接报错，不会退回去挑另一条通道执行
   - run 的远端命令前面一定要有 --，省略名字时也要写：ssh-hold run -- uname -a
   - 开着多条通道时，run / shell / stop 都必须写名字，不会替你猜
+  - upload / download 永远要写名字；最后一个参数是目的地，前面的都是源，目录会整个传
   - 凭据过期后，已经撑开的通道一般还能继续用；一旦断开就只能重新认证
   - 进来之后不要在远端敲 exit 关自己的登录；关通道用本机的 ssh-hold stop
   - 如果服务器或堡垒机设了「最长会话时间」，到点还是会被踢，这个挡不住
@@ -212,13 +217,25 @@ list_names() {
   shopt -u nullglob
 }
 
-read_meta() {
+# 只管读，不判好坏：读完 TARGET 还是空的就是坏记录，怎么处置由调用方定。
+load_meta() {
   local name="$1" file
   file="$(meta_path "$name")"
   [[ -f "$file" ]] || die "没有名为 ${name} 的通道。先 ssh-hold start，或 ssh-hold list 看看。"
+  # 先清空再读：这些是全局变量，不清的话上一条通道的值会冒充这一条。
+  TARGET="" PORT="" STARTED="" AUTH="" INSECURE=""
+  # 语法都不对的文件直接 source 会让 bash 当场整个退出，所以先在子 shell 里试读一遍，
+  # 不过关就当它是空的。不用 bash -n：3.2 上它碰到语法错误照样返回 0。
   # shellcheck disable=SC1090
-  source "$file"
-  [[ -n "${TARGET:-}" ]] || die "通道 ${name} 的记录坏了，建议 ssh-hold stop ${name} 后重开。"
+  if (source "$file") >/dev/null 2>&1; then
+    source "$file"
+  fi
+}
+
+# 要拿记录去连远端的入口用这个：坏记录直接停下。
+read_meta() {
+  load_meta "$1"
+  [[ -n "$TARGET" ]] || die "通道 ${1} 的记录坏了，建议 ssh-hold stop ${1} 后重开。"
 }
 
 write_meta() {
@@ -240,11 +257,16 @@ master_check() {
   ssh -O check -o ControlPath="$(sock_path "$name")" dummy >/dev/null 2>&1
 }
 
+# 读出记录并确认通道还活着。run / shell / 传文件都从这里过，断线提示只有这一份。
+require_alive() {
+  read_meta "$1"
+  master_check "$1" || die "通道 ${1} 已经断了，不会自动重连。证书通道用原来的 -i 再 start 一次；密码通道要重新拿到密码。"
+}
+
 ssh_through() {
   local name="$1"
   shift
-  read_meta "$name"
-  master_check "$name" || die "通道 ${name} 已经断了，不会自动重连。证书通道用原来的 -i 再 start 一次；密码通道要重新拿到密码。"
+  require_alive "$name"
   ssh \
     -o ControlPath="$(sock_path "$name")" \
     -o ControlMaster=no \
@@ -333,7 +355,9 @@ cmd_start() {
   done
 
   [[ -n "$target" ]] || die "请提供 用户@地址，例如 ubuntu@1.2.3.4"
-  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "通道名只能用字母、数字、点、下划线、短横线"
+  # 至少要有一个不是点的字符：. 和 .. 会让通道目录落到 BASE 外面去。
+  [[ "$name" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] \
+    || die "通道名只能用字母、数字、点、下划线、短横线，且不能全是点"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || die "端口不合法: $port"
 
   local dir sock
@@ -443,65 +467,88 @@ existing_names() {
 }
 
 # 写了名字就必须命中，绝不退回去猜别的通道——猜错等于在别的机器上干活。
+# 认不认得一个名字只看 list 里有没有它，不拿名字去拼路径探文件。
 resolve_name() {
-  local maybe="${1:-}"
+  local maybe="${1:-}" hint="${2:-}" n
   existing_names
 
-  if [[ -n "$maybe" ]]; then
-    if [[ -f "$(meta_path "$maybe")" ]]; then
-      printf '%s' "$maybe"
-      return 0
-    fi
-    if (( ${#NAMES[@]} == 0 )); then
-      die "没有名为 ${maybe} 的通道，现在也没有任何通道，不执行。先 ssh-hold start 用户@地址"
-    fi
-    die "没有名为 ${maybe} 的通道，不执行。现有: ${NAMES[*]}"
-  fi
-
-  if (( ${#NAMES[@]} == 1 )); then
+  if [[ -z "$maybe" ]]; then
+    (( ${#NAMES[@]} != 0 )) || die "现在没有撑开的通道。先 ssh-hold start 用户@地址"
+    (( ${#NAMES[@]} == 1 )) || die "有多条通道，请写名字。现有: ${NAMES[*]}"
     printf '%s' "${NAMES[0]}"
     return 0
   fi
-  if (( ${#NAMES[@]} == 0 )); then
-    die "现在没有撑开的通道。先 ssh-hold start 用户@地址"
-  fi
-  die "有多条通道，请写名字。现有: ${NAMES[*]}"
+
+  (( ${#NAMES[@]} != 0 )) \
+    || die "没有名为 ${maybe} 的通道，现在也没有任何通道，不执行。先 ssh-hold start 用户@地址"
+  for n in "${NAMES[@]}"; do
+    [[ "$n" != "$maybe" ]] || { printf '%s' "$n"; return 0; }
+  done
+  die "没有名为 ${maybe} 的通道，不执行。现有: ${NAMES[*]}${hint:+
+$hint}"
 }
 
 cmd_run() {
-  local name=""
+  local name
   [[ $# -gt 0 ]] || die "用法: ssh-hold run [名字] -- 命令...  例如: ssh-hold run -- uname -a"
 
   if [[ "$1" == "--" ]]; then
-    shift
     name="$(resolve_name)"
   else
     # 第一个参数一律当通道名。不存在就停下，不能顺手当成远端命令跑到别的通道上。
-    if [[ ! -f "$(meta_path "$1")" ]]; then
-      existing_names
-      if (( ${#NAMES[@]} == 0 )); then
-        die "没有名为 ${1} 的通道，现在也没有任何通道，不执行。先 ssh-hold start 用户@地址"
-      fi
-      die "没有名为 ${1} 的通道，不执行。现有: ${NAMES[*]}
-如果 ${1} 是要在远端执行的命令，前面要加 --：ssh-hold run 名字 -- ${1} ..."
-    fi
-    name="$1"
+    name="$(resolve_name "$1" "如果 ${1} 是要在远端执行的命令，前面要加 --：ssh-hold run 名字 -- ${1} ...")"
     shift
     [[ $# -gt 0 ]] || die "请在 -- 后面写要执行的命令，例如: ssh-hold run ${name} -- uname -a"
     [[ "$1" == "--" ]] || die "通道名后面要加 --，例如: ssh-hold run ${name} -- $*"
-    shift
   fi
+  shift
 
   [[ $# -gt 0 ]] || die "请在 -- 后面写要执行的命令，例如: ssh-hold run ${name} -- uname -a"
   ssh_through "$name" "$@"
+}
+
+# 本机路径补上 ./：带冒号的文件名不会被 scp 当成「主机:路径」，短横线开头的也不会被当成选项。
+local_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf './%s' "$1" ;;
+  esac
+}
+
+remote_path() {
+  printf '%s:%s' "$TARGET" "$1"
+}
+
+# 上传和下载是同一件事，只差哪一头在远端：前两个参数就是源和目的各自的写法。
+# 底下是复用同一个套接字的 scp，一律带 -r，文件和目录不用分开处理。
+cmd_transfer() {
+  local src_side="$1" dst_side="$2" verb="$3" name p paths=()
+  shift 3
+  need_cmd scp
+  (( $# >= 3 )) || die "用法: ssh-hold ${verb} 名字 源路径... 目的路径  例如: ssh-hold ${verb} web 源 目的"
+  name="$(resolve_name "$1")"
+  shift
+  require_alive "$name"
+
+  for p in "${@:1:$#-1}"; do
+    paths+=("$("$src_side" "$p")")
+  done
+  paths+=("$("$dst_side" "${!#}")")
+
+  scp -r \
+    -o ControlPath="$(sock_path "$name")" \
+    -o ControlMaster=no \
+    -o BatchMode=yes \
+    -o ConnectTimeout=8 \
+    -P "$PORT" \
+    "${paths[@]}"
 }
 
 cmd_shell() {
   local name
   (( $# <= 1 )) || die "shell 只收一个通道名，多余参数: ${*:2}"
   name="$(resolve_name "${1:-}")"
-  read_meta "$name"
-  master_check "$name" || die "通道 ${name} 已经断了。请拿新密码重新 start。"
+  require_alive "$name"
   echo "进入远端。出来时用 Ctrl+D 或 exit；通道本身不会因此关掉。"
   ssh \
     -t \
@@ -514,7 +561,12 @@ cmd_shell() {
 
 print_one_status() {
   local name="$1" alive="已断开" keep="无"
-  read_meta "$name"
+  load_meta "$name"
+  # 坏记录只标出来，不能让它挡住排在后面的通道。
+  if [[ -z "$TARGET" ]]; then
+    printf '  %s\n    记录: 坏了，建议 ssh-hold stop %s 后重开\n' "$name" "$name"
+    return 0
+  fi
   if master_check "$name"; then
     alive="畅通"
   fi
@@ -570,7 +622,7 @@ cmd_stop() {
   local name
   (( $# <= 1 )) || die "stop 一次只关一条，请分开写。多余参数: ${*:2}"
   name="$(resolve_name "${1:-}")"
-  read_meta "$name" || true
+  # 这里故意不读 meta：记录坏了也得关得掉，否则「stop 后重开」这条建议就成了死路。
   stop_keepalive "$name"
   if master_check "$name"; then
     ssh -O exit -o ControlPath="$(sock_path "$name")" dummy >/dev/null 2>&1 || true
@@ -714,6 +766,8 @@ main() {
     start) cmd_start "$@" ;;
     run|exec) cmd_run "$@" ;;
     shell|sh) cmd_shell "$@" ;;
+    upload|put) cmd_transfer local_path remote_path upload "$@" ;;
+    download|get) cmd_transfer remote_path local_path download "$@" ;;
     status) cmd_status "$@" ;;
     list|ls) cmd_list "$@" ;;
     stop|close|exit) cmd_stop "$@" ;;

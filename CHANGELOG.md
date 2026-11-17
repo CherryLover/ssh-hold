@@ -2,6 +2,28 @@
 
 ## 未发布
 
+### 新增 `ssh-hold upload` / `ssh-hold download`
+
+```bash
+ssh-hold upload web ./app.tar.gz /tmp/
+ssh-hold download web /var/log/nginx/error.log ./
+```
+
+- 最后一个参数是目的地，前面的都是源；文件、目录、多个源都行，别名 `put` / `get`
+- 底下是复用同一个套接字的 `scp`，不再认证，退出码原样传回。不做断点续传，要的话用 `rsync` 复用套接字
+- 通道名必须写，不像 `run` 那样只有一条时可以省——省了就得把第一个路径猜成名字
+- 相对的本机路径会补上 `./`，文件名里带冒号或以短横线开头也不会被 `scp` 误读
+
+### 修复
+
+- **记录损坏的通道关不掉**：`stop` 会先去读 `meta`，读不出来就直接退出，而那条报错给的建议恰恰是「`stop` 后重开」。现在 `stop` 不看记录内容
+- **`start -n ..` 没被拦住**：通道名校验放过了 `.` 和 `..`，套接字和记录会写到通道目录外面。现在全是点的名字一律拒绝
+- **带路径的名字能绕过 `list`**：认不认得一个名字原来是拿它拼路径探文件，`run ../x/web` 这种写法探得到。现在只认 `list` 里有的
+- **损坏的记录会冒用上一条通道的地址**：`list` 逐条读记录时变量没清，后一条读不出目标时沿用了前一条的。现在每次读之前先清空
+- **一条坏记录让 `list` 半路退出**：排在它后面的通道全都列不出来。现在只把这条标成「记录: 坏了」，其余照常列；`run`、`shell`、传文件碰到坏记录仍然直接停下
+- `shell` 的断线提示还是「请拿新密码重新 start」，对证书通道不对；`run`、`shell`、传文件现在共用同一句
+- README 常见报错表里两条报错原文和程序实际输出对不上，已对齐
+
 - **可以用 Homebrew 装了**：`brew install cherrylover/tap/ssh-hold`。Formula 在
   [CherryLover/homebrew-tap](https://github.com/CherryLover/homebrew-tap)，装完带 man 手册和
   bash / zsh 补全。tap 里有个定时任务每天自动把 formula 对齐到最新 Release，不需要手工改
