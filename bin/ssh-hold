@@ -3,7 +3,7 @@
 # 密码或证书只在 start 时用一次，密码不落盘。通道断了不会自动重连。
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 BASE="${SSH_HOLD_DIR:-$HOME/.ssh/hold}"
 DEFAULT_NAME="default"
