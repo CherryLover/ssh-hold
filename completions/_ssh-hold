@@ -16,6 +16,8 @@ _ssh_hold() {
     'paste:读取剪贴板里的跳板机信息并撑开通道'
     'run:在已撑开的通道上执行远端命令'
     'shell:进入远端交互终端'
+    'upload:把本机的文件或目录传到远端'
+    'download:把远端的文件或目录取回本机'
     'status:看通道还在不在'
     'list:列出所有通道'
     'stop:关掉通道'
@@ -56,6 +58,7 @@ _ssh_hold() {
             '--dir[装到指定的 skills 根目录]:目录:_files -/' \
             '1:子命令:(install path show)'
           ;;
+        upload|put|download|get) _arguments '1: :_ssh_hold_names' '*:路径:_files' ;;
         run|exec|shell|sh|status|stop|close|exit) _ssh_hold_names ;;
       esac
       ;;

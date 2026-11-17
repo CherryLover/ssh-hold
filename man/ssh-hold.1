@@ -14,6 +14,12 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B ssh\-hold shell
 [名字]
 .br
+.B ssh\-hold upload
+名字 本地路径... 远端路径
+.br
+.B ssh\-hold download
+名字 远端路径... 本地路径
+.br
 .B ssh\-hold status
 [名字]
 .br
@@ -64,6 +70,17 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B shell
 进入远端交互终端。退出终端不会关掉通道。
 .TP
+.BR upload ", " download
+在通道上传文件：
+.B upload
+把本机的文件或目录传到远端，
+.B download
+把远端的取回本机。最后一个参数是目的地，前面的都是源，目录会整个传过去。
+通道名必须写，即使只开着一条。底下是复用同一个套接字的
+.BR scp (1)，
+不再认证，同名文件直接覆盖，不支持断点续传。别名
+.BR put " 和 " get 。
+.TP
 .B status ", " list
 查看通道是否还畅通、保活进程在不在、远端到底是哪台机器。
 .TP
@@ -111,7 +128,7 @@ Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
 .SH START 选项
 .TP
 .BR \-n ", " \-\-name " 名字"
-通道名，默认 \fBdefault\fR。只能用字母、数字、点、下划线、短横线。
+通道名，默认 \fBdefault\fR。只能用字母、数字、点、下划线、短横线，且不能全是点。
 .TP
 .BR \-p ", " \-\-port " 端口"
 远端端口，默认 22。
@@ -158,7 +175,11 @@ Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
 运行库目录。默认跟随可执行文件所在的那份安装，一般不用设。
 .SH 退出状态
 .B run
-返回远端命令的退出码。其余命令成功返回 0，失败返回非 0 并在标准错误上打印中文说明。
+返回远端命令的退出码，
+.BR upload " 和 " download
+返回
+.BR scp (1)
+的退出码。其余命令成功返回 0，失败返回非 0 并在标准错误上打印中文说明。
 .SH 文件
 .TP
 .I ~/.ssh/hold/<名字>/sock
@@ -214,12 +235,22 @@ ssh\-hold skill install
 .RE
 .fi
 .PP
-让 scp 复用同一条通道，同样不用再认证：
+上传和下载：
 .PP
 .nf
 .RS
-scp \-o ControlPath="$HOME/.ssh/hold/web/sock" \-o ControlMaster=no \\
-    本地文件 ubuntu@1.2.3.4:/tmp/
+ssh\-hold upload web ./app.tar.gz /tmp/
+ssh\-hold download web /var/log/nginx/error.log ./
+.RE
+.fi
+.PP
+要增量同步或断点续传，让 rsync 复用同一条通道：
+.PP
+.nf
+.RS
+rsync \-avz \-\-partial \\
+    \-e "ssh \-o ControlPath=$HOME/.ssh/hold/web/sock \-o ControlMaster=no" \\
+    本地目录/ ubuntu@1.2.3.4:/tmp/目录/
 .RE
 .fi
 .SH 注意

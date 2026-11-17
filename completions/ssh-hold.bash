@@ -21,7 +21,7 @@ _ssh_hold() {
   done
 
   if [[ -z "$cmd" ]]; then
-    COMPREPLY=($(compgen -W "start paste run shell status list stop skill version --help --version" -- "$cur"))
+    COMPREPLY=($(compgen -W "start paste run shell upload download status list stop skill version --help --version" -- "$cur"))
     return
   fi
 
@@ -45,6 +45,14 @@ _ssh_hold() {
         COMPREPLY=($(compgen -W "--claude --codex --dir --help" -- "$cur"))
       else
         COMPREPLY=($(compgen -W "install path show" -- "$cur"))
+      fi
+      ;;
+    upload|put|download|get)
+      # 紧跟在子命令后面的是通道名，再往后都是路径。
+      if [[ "$prev" == "$cmd" ]]; then
+        COMPREPLY=($(compgen -W "$(_ssh_hold_names)" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -f -- "$cur"))
       fi
       ;;
     run|exec|shell|sh|status|stop|close|exit)

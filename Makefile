@@ -20,7 +20,7 @@ version:
 	@echo $(VERSION)
 
 test:
-	cd tests && python3 -m unittest -v test_paste test_skill
+	cd tests && python3 -m unittest -v test_paste test_skill test_cli
 
 test-wire:
 	cd tests && uv run --with paramiko python -m unittest -v test_wire
