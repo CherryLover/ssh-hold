@@ -1,6 +1,8 @@
 # 更新记录
 
-## 未发布
+## 1.2.0 — 2026-11-17
+
+能在通道上直接传文件了，另外修掉了通道记录损坏时的几处问题。
 
 ### 新增 `ssh-hold upload` / `ssh-hold download`
 
@@ -23,6 +25,8 @@ ssh-hold download web /var/log/nginx/error.log ./
 - **一条坏记录让 `list` 半路退出**：排在它后面的通道全都列不出来。现在只把这条标成「记录: 坏了」，其余照常列；`run`、`shell`、传文件碰到坏记录仍然直接停下
 - `shell` 的断线提示还是「请拿新密码重新 start」，对证书通道不对；`run`、`shell`、传文件现在共用同一句
 - README 常见报错表里两条报错原文和程序实际输出对不上，已对齐
+
+### 安装
 
 - **可以用 Homebrew 装了**：`brew install cherrylover/tap/ssh-hold`。Formula 在
   [CherryLover/homebrew-tap](https://github.com/CherryLover/homebrew-tap)，装完带 man 手册和
