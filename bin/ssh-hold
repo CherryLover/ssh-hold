@@ -3,7 +3,7 @@
 # 密码或证书只在 start 时用一次，密码不落盘。通道断了不会自动重连。
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 BASE="${SSH_HOLD_DIR:-$HOME/.ssh/hold}"
 DEFAULT_NAME="default"
@@ -50,7 +50,7 @@ unpack_embedded() {
   [[ -n "$EMBED_DIR" ]] && return 0
   (( HAS_EMBEDDED )) || return 1
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/ssh-hold/lib-${VERSION}"
-  if [[ -f "$cache/paste.py" && -x "$cache/askpass" && -f "$cache/SKILL.md" ]]; then
+  if [[ -f "$cache/paste.py" && -f "$cache/myshell.py" && -x "$cache/askpass" && -f "$cache/SKILL.md" ]]; then
     EMBED_DIR="$cache"
     return 0
   fi
@@ -133,6 +133,7 @@ usage() {
   ssh-hold status [名字]              看通道还在不在
   ssh-hold list                       列出所有通道
   ssh-hold stop [名字]                关掉通道
+  ssh-hold link-myshell 用户@地址 [密码]  把那台机器上 MyShell 里存的服务器登记成通道
   ssh-hold skill install              把用法教给 Claude Code / Codex
   ssh-hold version                    显示版本和安装位置
 
@@ -152,6 +153,9 @@ paste 选项:
   --verify-password        本地核对剪贴板密码与手动输入是否一致，不联网、不显示密码
   --keep-password-spaces   密码本身包含首尾空白时保留；默认去除复制时带上的首尾空白
   --insecure               不校验主机指纹（默认仍校验）
+
+link-myshell 选项（详见 ssh-hold link-myshell --help）:
+  --group / --tag / --pick 只登记某个分组、某个标签、某个名字的服务器，可重复
 
 skill 选项（详见 ssh-hold skill --help）:
   --claude / --codex       只装给其中一个，默认按本机装了哪个自动挑
@@ -175,6 +179,7 @@ skill 选项（详见 ssh-hold skill --help）:
   - 名字写了就必须对得上，写错直接报错，不会退回去挑另一条通道执行
   - run 的远端命令前面一定要有 --，省略名字时也要写：ssh-hold run -- uname -a
   - 开着多条通道时，run / shell / stop 都必须写名字，不会替你猜
+  - 经 MyShell 登记的通道只支持 run：凭据留在那台机器上，命令由它代为执行，最长 120 秒
   - upload / download 永远要写名字；最后一个参数是目的地，前面的都是源，目录会整个传
   - 凭据过期后，已经撑开的通道一般还能继续用；一旦断开就只能重新认证
   - 进来之后不要在远端敲 exit 关自己的登录；关通道用本机的 ssh-hold stop
@@ -182,26 +187,27 @@ skill 选项（详见 ssh-hold skill --help）:
 EOF
 }
 
-session_dir() {
-  printf '%s/%s' "$BASE" "$1"
+session_dir() { printf '%s/%s' "$BASE" "$1"; }
+sock_path() { printf '%s/%s/sock' "$BASE" "$1"; }
+meta_path() { printf '%s/%s/meta' "$BASE" "$1"; }
+pid_path() { printf '%s/%s/keepalive.pid' "$BASE" "$1"; }
+log_path() { printf '%s/%s/keepalive.log' "$BASE" "$1"; }
+
+# 名字就是目录名。ASCII 部分只认字母、数字、点、下划线、短横线，其余文字（中文等）放行；
+# 不能以短横线开头，也不能全是点——. 和 .. 会让通道目录落到 BASE 外面去。
+valid_name() {
+  local rest="${1//[A-Za-z0-9._-]/}"
+  [[ "$1" == *[!.]* && "$1" != -* && "$rest" != *[[:ascii:]]* ]]
 }
 
-sock_path() {
-  printf '%s/%s/sock' "$BASE" "$1"
+# paste 和 MyShell 转发都是 lib/ 里的 python 脚本；第一个参数是本程序的路径，供它们回调。
+run_lib() {
+  local script="$1"
+  shift
+  need_cmd python3
+  resolve_lib
+  python3 "$LIB_DIR/$script" "$SELF" "$@"
 }
-
-meta_path() {
-  printf '%s/%s/meta' "$BASE" "$1"
-}
-
-pid_path() {
-  printf '%s/%s/keepalive.pid' "$BASE" "$1"
-}
-
-log_path() {
-  printf '%s/%s/keepalive.log' "$BASE" "$1"
-}
-
 ensure_base() {
   mkdir -p "$BASE"
   chmod 700 "$BASE"
@@ -223,7 +229,7 @@ load_meta() {
   file="$(meta_path "$name")"
   [[ -f "$file" ]] || die "没有名为 ${name} 的通道。先 ssh-hold start，或 ssh-hold list 看看。"
   # 先清空再读：这些是全局变量，不清的话上一条通道的值会冒充这一条。
-  TARGET="" PORT="" STARTED="" AUTH="" INSECURE=""
+  TARGET="" PORT="" STARTED="" AUTH="" INSECURE="" VIA="" REMOTE_ID=""
   # 语法都不对的文件直接 source 会让 bash 当场整个退出，所以先在子 shell 里试读一遍，
   # 不过关就当它是空的。不用 bash -n：3.2 上它碰到语法错误照样返回 0。
   # shellcheck disable=SC1090
@@ -260,6 +266,7 @@ master_check() {
 # 读出记录并确认通道还活着。run / shell / 传文件都从这里过，断线提示只有这一份。
 require_alive() {
   read_meta "$1"
+  [[ -z "$VIA" ]] || die "通道 ${1} 是经 ${VIA} 上的 MyShell 转发的，只支持 run。"
   master_check "$1" || die "通道 ${1} 已经断了，不会自动重连。证书通道用原来的 -i 再 start 一次；密码通道要重新拿到密码。"
 }
 
@@ -355,9 +362,7 @@ cmd_start() {
   done
 
   [[ -n "$target" ]] || die "请提供 用户@地址，例如 ubuntu@1.2.3.4"
-  # 至少要有一个不是点的字符：. 和 .. 会让通道目录落到 BASE 外面去。
-  [[ "$name" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] \
-    || die "通道名只能用字母、数字、点、下划线、短横线，且不能全是点"
+  valid_name "$name" || die "通道名不能有空格、斜杠和标点（点、下划线、短横线除外），不能以短横线开头，也不能全是点"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || die "端口不合法: $port"
 
   local dir sock
@@ -504,6 +509,12 @@ cmd_run() {
   shift
 
   [[ $# -gt 0 ]] || die "请在 -- 后面写要执行的命令，例如: ssh-hold run ${name} -- uname -a"
+  read_meta "$name"
+  if [[ -n "$VIA" ]]; then
+    # 和 ssh 一样把参数用空格拼成一条命令，交给远端的 shell 去解释。
+    run_lib myshell.py exec "$VIA" "$REMOTE_ID" "$*"
+    return
+  fi
   ssh_through "$name" "$@"
 }
 
@@ -567,6 +578,12 @@ print_one_status() {
     printf '  %s\n    记录: 坏了，建议 ssh-hold stop %s 后重开\n' "$name" "$name"
     return 0
   fi
+  if [[ -n "$VIA" ]]; then
+    master_check "$VIA" && alive="畅通"
+    printf '  %s\n    目标: %s:%s\n    经由: %s 上的 MyShell（%s），只支持 run\n' \
+      "$name" "$TARGET" "$PORT" "$VIA" "$alive"
+    return 0
+  fi
   if master_check "$name"; then
     alive="畅通"
   fi
@@ -614,15 +631,21 @@ cmd_status() {
   done
 }
 
-cmd_list() {
-  cmd_status
-}
-
 cmd_stop() {
   local name
   (( $# <= 1 )) || die "stop 一次只关一条，请分开写。多余参数: ${*:2}"
   name="$(resolve_name "${1:-}")"
   # 这里故意不读 meta：记录坏了也得关得掉，否则「stop 后重开」这条建议就成了死路。
+  # 登记来的通道：让 MyShell 把它那头的连接也关掉（有人开着终端就不动）。关不掉不碍事。
+  load_meta "$name"
+  [[ -z "$VIA" ]] || run_lib myshell.py close "$VIA" "$REMOTE_ID" 2>/dev/null || true
+  # 经它转发的登记也一并清掉：没有它，那些记录哪儿也去不了。
+  local n
+  existing_names
+  for n in "${NAMES[@]}"; do
+    load_meta "$n"
+    [[ "$VIA" != "$name" ]] || { rm -rf "$(session_dir "$n")"; echo "已清掉经它转发的登记：$n"; }
+  done
   stop_keepalive "$name"
   if master_check "$name"; then
     ssh -O exit -o ControlPath="$(sock_path "$name")" dummy >/dev/null 2>&1 || true
@@ -757,11 +780,8 @@ main() {
   shift || true
   case "$cmd" in
     -V|--version|version) cmd_version ;;
-    paste)
-      need_cmd python3
-      resolve_lib
-      python3 "$LIB_DIR/paste.py" "$SELF" "$@"
-      ;;
+    paste) run_lib paste.py "$@" ;;
+    link-myshell) run_lib myshell.py link "$@" ;;
     skill) cmd_skill "$@" ;;
     start) cmd_start "$@" ;;
     run|exec) cmd_run "$@" ;;
@@ -769,7 +789,7 @@ main() {
     upload|put) cmd_transfer local_path remote_path upload "$@" ;;
     download|get) cmd_transfer remote_path local_path download "$@" ;;
     status) cmd_status "$@" ;;
-    list|ls) cmd_list "$@" ;;
+    list|ls) cmd_status ;;
     stop|close|exit) cmd_stop "$@" ;;
     *) die "未知命令: ${cmd}。看帮助: ssh-hold --help" ;;
   esac

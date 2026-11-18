@@ -20,7 +20,7 @@ version:
 	@echo $(VERSION)
 
 test:
-	cd tests && python3 -m unittest -v test_paste test_skill test_cli
+	cd tests && python3 -m unittest -v test_paste test_skill test_cli test_myshell
 
 test-wire:
 	cd tests && uv run --with paramiko python -m unittest -v test_wire
@@ -32,7 +32,7 @@ lint:
 		echo "没装 shellcheck，跳过 shell 检查"; \
 	fi
 	@bash -n bin/ssh-hold install.sh
-	@python3 -m py_compile lib/paste.py scripts/build-standalone.py
+	@python3 -m py_compile lib/paste.py lib/myshell.py scripts/build-standalone.py
 	@echo "检查通过"
 
 standalone:
@@ -44,7 +44,7 @@ dist: clean standalone
 	sed 's/^VERSION="[^"]*"$$/VERSION="$(VERSION)"/' bin/ssh-hold > $(PKG)/bin/ssh-hold
 	chmod 755 $(PKG)/bin/ssh-hold
 	cp lib/askpass $(PKG)/lib/askpass && chmod 755 $(PKG)/lib/askpass
-	cp lib/paste.py $(PKG)/lib/paste.py
+	cp lib/paste.py lib/myshell.py $(PKG)/lib/
 	cp skill/SKILL.md $(PKG)/skill/
 	cp man/ssh-hold.1 $(PKG)/man/
 	cp completions/ssh-hold.bash completions/_ssh-hold $(PKG)/completions/

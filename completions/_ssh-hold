@@ -21,6 +21,7 @@ _ssh_hold() {
     'status:看通道还在不在'
     'list:列出所有通道'
     'stop:关掉通道'
+    'link-myshell:把另一台机器上 MyShell 里的服务器登记成通道'
     'skill:把用法教给 Claude Code / Codex'
     'version:显示版本和安装位置'
   )
@@ -50,6 +51,18 @@ _ssh_hold() {
             '--verify-password[本地核对密码是否一致]' \
             '--keep-password-spaces[保留密码首尾空白]' \
             '--insecure[不校验主机指纹]'
+          ;;
+        link-myshell)
+          _arguments \
+            '(-n --name)'{-n,--name}'[到那台机器的通道名]:名字:' \
+            '(-p --port)'{-p,--port}'[端口]:端口:' \
+            '(-i --identity)'{-i,--identity}'[指定密钥]:密钥文件:_files' \
+            '--password-stdin[从标准输入读密码]' \
+            '--insecure[不校验主机指纹]' \
+            '*--group[只登记这个分组]:分组:' \
+            '*--tag[只登记带这个标签的]:标签:' \
+            '*--pick[只登记叫这个名字的]:名字:' \
+            '1:目标:_ssh_hosts'
           ;;
         skill)
           _arguments \

@@ -35,7 +35,7 @@ usage() {
 
 装完的位置:
   <前缀>/bin/ssh-hold
-  <前缀>/lib/ssh-hold/{askpass,paste.py}
+  <前缀>/lib/ssh-hold/{askpass,paste.py,myshell.py}
   <前缀>/share/ssh-hold/SKILL.md
   <前缀>/share/man/man1/ssh-hold.1
   <前缀>/share/bash-completion/completions/ssh-hold
@@ -152,6 +152,7 @@ fi
 install_file "$SRC/bin/ssh-hold" "$PREFIX/bin/ssh-hold" 755
 install_file "$SRC/lib/askpass" "$PREFIX/lib/ssh-hold/askpass" 755
 install_file "$SRC/lib/paste.py" "$PREFIX/lib/ssh-hold/paste.py" 644
+install_file "$SRC/lib/myshell.py" "$PREFIX/lib/ssh-hold/myshell.py" 644
 install_file "$SRC/skill/SKILL.md" "$PREFIX/share/ssh-hold/SKILL.md" 644
 install_file "$SRC/man/ssh-hold.1" "$PREFIX/share/man/man1/ssh-hold.1" 644
 install_file "$SRC/completions/ssh-hold.bash" "$PREFIX/share/bash-completion/completions/ssh-hold" 644
