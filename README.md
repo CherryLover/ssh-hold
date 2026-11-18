@@ -125,7 +125,7 @@ ssh-hold skill install --dir ~/某项目/.claude/skills
 ### 依赖
 
 - `bash`（3.2 起，macOS 自带的就行）和 OpenSSH 客户端
-- `python3`：只有 `ssh-hold paste` 用得到
+- `python3`：只有 `ssh-hold paste` 和 `ssh-hold link-myshell` 这一路用得到
 - 不需要 `sshpass`。密码通过 `SSH_ASKPASS` 直接交给 ssh，不匹配终端输出
 
 macOS 和 Linux 都能跑，`paste` 依赖 `pbpaste`，目前只支持 macOS。
@@ -154,7 +154,7 @@ printf '%s\n' '密码' | ssh-hold start -n web --password-stdin ubuntu@1.2.3.4
 
 地址经常变、主机指纹对不上时加 `--insecure` 跳过指纹校验，仅限临时场景。
 
-多台机器同时撑开，用 `-n` 起不同名字区分。不写 `-n` 默认叫 `default`，不写 `-p` 默认 22。
+多台机器同时撑开，用 `-n` 起不同名字区分。不写 `-n` 默认叫 `default`，不写 `-p` 默认 22。名字可以用中文，ASCII 部分只能是字母、数字、点、下划线、短横线。
 
 ### 从剪贴板直接开（可选，macOS）
 
@@ -169,6 +169,39 @@ ssh-hold paste
 不确定解析对不对，先 `ssh-hold paste --check` 看一眼（会显示明文密码，别截图）。怀疑密码不对，用 `ssh-hold paste --verify-password` 跟手动输入的比一比，全程本地比较，不联网也不显示内容。
 
 这就是个针对某一种复制格式的小便利，用不上完全可以忽略——直接 `start` 一样能连。
+
+### 借用另一台机器上 MyShell 里的服务器
+
+有些服务器从这台电脑根本连不上——对方只认某个 IP，或者凭据只存在另一台机器的 MyShell 里。只要那台机器能 SSH 上去，就可以把它 MyShell 里存的服务器登记过来：
+
+```bash
+ssh-hold link-myshell you@100.64.0.1 '密码' --group 生产
+```
+
+```
+  生产-东京-1    ubuntu@ops.example.com:2222    [生产]
+  生产-新加坡-2    ubuntu@ops.example.com:2222    [生产]
+
+已接入 you@100.64.0.1 上的 MyShell（经通道 myshell），登记了 2 台。
+```
+
+之后它们和普通通道列在一起，用法也一样：
+
+```bash
+ssh-hold list
+ssh-hold run 生产-东京-1 -- 'docker ps'
+```
+
+实际发生的事：`link-myshell` 先像 `start` 一样撑开一条到那台机器的通道（已经有就直接用），再经这条通道问 MyShell 要服务器列表，每台记一笔。`run` 的时候命令经这条通道交给 MyShell，由它用自己保管的凭据去连、去执行。目标服务器的密码和 MyShell 的令牌都不会到这台电脑上来，目标服务器看到的来源也是那台机器。
+
+- `--group` / `--tag` / `--pick 名字` 挑要暴露哪些，可重复；不写就全部登记。重跑同一条命令就是重新对齐：多出来的加上，不再符合条件的移除
+- MyShell 里的名字原样保留，中文也行；空格和标点换成短横线，重名的加 `-2`
+- 登记来的通道**只支持 `run`**，没有 `shell`、`upload`、`download`
+- 一条命令最长跑 120 秒，超时退出码是 124。更久的放到后台跑（`nohup … &`）再回来查
+- 密码写在命令行里会留在 shell 历史里，介意就用 `--password-stdin` 或 `-i 密钥`
+- `ssh-hold stop 名字` 移除一条登记；`stop` 那条到 MyShell 机器的通道，会把经它登记的一并清掉
+
+那台机器上需要 `curl`，MyShell 要开着。目前只认 macOS 上 MyShell 的位置。
 
 ### 在通道上干活
 
@@ -223,6 +256,7 @@ ssh-hold stop web     # 断开并删掉记录
 | 上传 | `ssh-hold upload 名字 本地路径... 远端路径` |
 | 下载 | `ssh-hold download 名字 远端路径... 本地路径` |
 | 关闭 | `ssh-hold stop 名字` |
+| 借用 MyShell 里的服务器 | `ssh-hold link-myshell 用户@地址 [密码] [--group 分组]` |
 | 教给 AI 工具 | `ssh-hold skill install` |
 | 版本和路径 | `ssh-hold version` |
 
@@ -257,6 +291,9 @@ ssh-hold stop web     # 断开并删掉记录
 | `通道名后面要加 --` | 漏了 `--` | `ssh-hold run 名字 -- 命令` |
 | `有多条通道，请写名字` | 省略了名字 | 补上名字 |
 | `用法: ssh-hold upload 名字 源路径... 目的路径` | 传文件时漏了通道名或目的地 | 名字、源、目的三样都要写 |
+| `通道 xxx 是经 yyy 上的 MyShell 转发的，只支持 run` | 对登记来的通道用了 `shell` / `upload` / `download` | 只能 `run`；要传文件得直接连那台服务器 |
+| `连不上 MyShell 的本地接口，它现在没在运行` | 那台机器上 MyShell 没开 | 去把它打开 |
+| `MyShell 拒绝了请求：…` | MyShell 自己连不上目标服务器，或请求不合法 | 按括号里的原因处理；多半要去 MyShell 里看那条连接 |
 | `通道 xxx 的记录坏了`，或 `list` 里显示 `记录: 坏了` | `meta` 文件损坏 | `ssh-hold stop xxx` 清掉再重开 |
 | `通道没撑起来。密码或密钥不对、凭据过期了，或者对方拒绝了连接。` | start 失败 | 确认凭据是否还有效、地址端口对不对；指纹问题加 `--insecure` |
 | `找不到运行库（askpass / paste.py）` | 安装不完整 | 重新装一遍，或用 `SSH_HOLD_LIB` 指定 lib 目录 |
@@ -282,11 +319,13 @@ make install     # 装到 ~/.local
 
 `make test-wire` 用 paramiko 在 127.0.0.1 上起一个假的 SSH 服务端，跑完整条 `paste` → `start --password-stdin` → `run` 链路，断言服务端收到的密码和剪贴板里的完全一致，且密码没有出现在任何输出里。带引号、反斜杠、首尾空格的密码都在用例里。
 
+`test_myshell` 的假 `ssh` 连 MyShell 一起演了：看远端命令要请求哪个接口，就从文件里取一份应答，并把请求记下来。登记、过滤、重新对齐、输出和退出码的传递都在这里验。
+
 `test_cli` 把 `ssh` 和 `scp` 换成替身：假 `ssh` 让记录在案的通道都算畅通，假 `scp` 只记下收到的参数。验的是「挑的是哪条通道、让 scp 干了什么」，以及记录损坏、名字非法这些边角。
 
 `skill` 的用例在一个临时 HOME 里摆出 `.claude` / `.codex` 目录，验证自动识别、`--dir`、备份和幂等，不会碰你真实的配置。
 
-仓库结构：`bin/` 可执行文件，`lib/` 运行时依赖（askpass、paste.py），`skill/` 发布出去的 SKILL.md，`man/`、`completions/` 手册和补全，`scripts/` 单文件版构建。
+仓库结构：`bin/` 可执行文件，`lib/` 运行时依赖（askpass、paste.py、myshell.py），`skill/` 发布出去的 SKILL.md，`man/`、`completions/` 手册和补全，`scripts/` 单文件版构建。
 
 打标签 `v*` 推上去，GitHub Actions 会自动跑测试、打包、发 Release。
 

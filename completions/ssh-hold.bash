@@ -21,12 +21,12 @@ _ssh_hold() {
   done
 
   if [[ -z "$cmd" ]]; then
-    COMPREPLY=($(compgen -W "start paste run shell upload download status list stop skill version --help --version" -- "$cur"))
+    COMPREPLY=($(compgen -W "start paste run shell upload download status list stop link-myshell skill version --help --version" -- "$cur"))
     return
   fi
 
   case "$prev" in
-    -n|--name|-p|--port|-o) return ;;
+    -n|--name|-p|--port|-o|--group|--tag|--pick) return ;;
     -i|--identity) COMPREPLY=($(compgen -f -- "$cur")); return ;;
     --dir) COMPREPLY=($(compgen -d -- "$cur")); return ;;
   esac
@@ -39,6 +39,10 @@ _ssh_hold() {
     paste)
       [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W \
         "-n --name --check --debug --verify-password --keep-password-spaces --insecure" -- "$cur"))
+      ;;
+    link-myshell)
+      [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W \
+        "-n --name -p --port -i --identity --password-stdin --insecure --group --tag --pick --help" -- "$cur"))
       ;;
     skill)
       if [[ "$cur" == -* ]]; then

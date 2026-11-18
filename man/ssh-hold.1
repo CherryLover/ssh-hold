@@ -28,6 +28,9 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B ssh\-hold stop
 [名字]
 .br
+.B ssh\-hold link\-myshell
+[选项] 用户@地址 [密码]
+.br
 .B ssh\-hold skill
 [install|path|show] [\fB\-\-claude\fR] [\fB\-\-codex\fR] [\fB\-\-dir\fR 目录]
 .br
@@ -87,6 +90,15 @@ ssh\-hold \- 撑开并复用一条 SSH 连接
 .B stop
 断开通道并删掉对应的记录目录。
 .TP
+.B link\-myshell
+把另一台机器上 MyShell 里存的服务器登记成通道。先撑开一条到那台机器的通道
+（已经有就直接用），再经它向 MyShell 的本地接口要服务器列表，每台记一笔。
+登记来的通道只支持
+.BR run ：
+命令经那条通道交给 MyShell，由它用自己保管的凭据去连接和执行，
+目标服务器的凭据和 MyShell 的令牌都不会到本机来。一条命令最长 120 秒，
+超时退出码为 124。重跑同一条命令即重新对齐列表。
+.TP
 .B skill
 把随程序一起发布的
 .I SKILL.md
@@ -128,7 +140,8 @@ Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
 .SH START 选项
 .TP
 .BR \-n ", " \-\-name " 名字"
-通道名，默认 \fBdefault\fR。只能用字母、数字、点、下划线、短横线，且不能全是点。
+通道名，默认 \fBdefault\fR。可以用中文等非 ASCII 文字；ASCII 部分只能是字母、数字、点、
+下划线、短横线。不能以短横线开头，也不能全是点。
 .TP
 .BR \-p ", " \-\-port " 端口"
 远端端口，默认 22。
@@ -149,6 +162,26 @@ Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
 .TP
 .BI \-o " 选项"
 额外透传给 ssh 的选项，可重复。
+.SH LINK\-MYSHELL 选项
+.TP
+.BR \-n ", " \-\-name " 名字"
+到那台机器的通道叫什么，默认 \fBmyshell\fR。已经有通道指向同一台机器时沿用那一条。
+.TP
+.BR \-p ", " \-\-port " 端口"
+那台机器的 SSH 端口，默认 22。
+.TP
+.BR \-i ", " \-\-identity " 文件"
+用密钥登录那台机器。
+.TP
+.B \-\-password\-stdin
+从标准输入读那台机器的密码。写成位置参数的密码会留在命令历史里。
+.TP
+.B \-\-insecure
+不校验那台机器的主机指纹。
+.TP
+.BI \-\-group " 分组" "\fR, \fP" \-\-tag " 标签" "\fR, \fP" \-\-pick " 名字"
+只登记符合条件的服务器，都可重复。同一种条件之间是「或」，不同种条件之间是「且」。
+不写就全部登记。
 .SH PASTE 选项
 .TP
 .BR \-n ", " \-\-name " 名字"
@@ -173,6 +206,9 @@ Claude Code 和 Codex 用的是同一种格式，一份文件两边都能用。
 .TP
 .B SSH_HOLD_LIB
 运行库目录。默认跟随可执行文件所在的那份安装，一般不用设。
+.TP
+.B SSH_HOLD_MYSHELL_TIMEOUT
+经 MyShell 执行一条命令最多等多少秒，1 到 120，默认 120。
 .SH 退出状态
 .B run
 返回远端命令的退出码，

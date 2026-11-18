@@ -47,6 +47,7 @@ jobs:
           "$RUNNER_TEMP/opt/bin/ssh-hold" version
           "$RUNNER_TEMP/opt/bin/ssh-hold" list
           test -f "$RUNNER_TEMP/opt/lib/ssh-hold/paste.py"
+          test -f "$RUNNER_TEMP/opt/lib/ssh-hold/myshell.py"
           test -f "$RUNNER_TEMP/opt/share/man/man1/ssh-hold.1"
 
       - name: 联网安装那条路径（拿本地包演一遍）
@@ -79,6 +80,8 @@ jobs:
           cp dist/ssh-hold "$RUNNER_TEMP/ssh-hold-standalone"
           "$RUNNER_TEMP/ssh-hold-standalone" version
           test -f "$HOME/.cache/ssh-hold"/lib-*/paste.py
+          test -f "$HOME/.cache/ssh-hold"/lib-*/myshell.py
+          "$RUNNER_TEMP/ssh-hold-standalone" link-myshell --help >/dev/null
           # 单文件版里内嵌的 SKILL.md 也要和源码一字不差
           "$RUNNER_TEMP/ssh-hold-standalone" skill install
           diff "$HOME/.codex/skills/ssh-hold/SKILL.md" "$GITHUB_WORKSPACE/skill/SKILL.md"

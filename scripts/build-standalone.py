@@ -2,7 +2,7 @@
 """Fold bin/ssh-hold and lib/ into one executable file.
 
 The result behaves exactly like the installed layout: on the code paths that
-actually need the runtime library (`start --password-stdin` and `paste`) it
+actually need the runtime library (`start --password-stdin`, `paste` and anything to do with MyShell) it
 writes the embedded copies into a per-version cache directory and uses those.
 Every other command never touches disk.
 
@@ -23,6 +23,7 @@ VERSION_LINE = re.compile(r'^VERSION="[^"]*"$', re.MULTILINE)
 PAYLOAD = (
     ("lib/askpass", "askpass", 0o700),
     ("lib/paste.py", "paste.py", 0o600),
+    ("lib/myshell.py", "myshell.py", 0o600),
     ("skill/SKILL.md", "SKILL.md", 0o600),
 )
 
